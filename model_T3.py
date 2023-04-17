@@ -21,11 +21,11 @@ class SSLModel(nn.Module):
     def __init__(self,device):
         super(SSLModel, self).__init__()
         
-        cp_path = './pretrained/chinese-wav2vec2-base-fairseq-ckpt.pt'   # Change the pre-trained XLSR model path. 
+        cp_path = './pretrained/xlsr2_300m.pt'   # Change the pre-trained XLSR model path. 
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
         self.device=device
-        self.out_dim = 768
+        self.out_dim = 1024
         return
 
     def extract_feat(self, input_data):
@@ -46,7 +46,6 @@ class SSLModel(nn.Module):
                 
             # [batch, length, dim]
             emb = self.model(input_tmp, mask=False, features_only=True)['x']
-            # print(emb.shape)
         return emb
 
 
@@ -502,7 +501,7 @@ class Model(nn.Module):
         self.pool_hS2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         self.pool_hT2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         
-        self.out_layer = nn.Linear(5 * gat_dims[1], 2)
+        self.out_layer = nn.Linear(5 * gat_dims[1], 7)
 
     def forward(self, x):
         #-------pre-trained Wav2vec model fine tunning ------------------------##

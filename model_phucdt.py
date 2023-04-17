@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch import Tensor
 import fairseq
 
+from hifigan import MultiPeriodDiscriminator, MultiScaleDiscriminator
 
 ___author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
@@ -16,16 +17,72 @@ __email__ = "tak@eurecom.fr"
 ## FOR fine-tuned SSL MODEL
 ############################
 
+class HifiDis(nn.Module):
+    def __init__(self,device):
+        super(HifiDis, self).__init__()
+        
+        config_file = "/dataa/phucdt/vocodetect/hifi-gan/cp_16k/config.json"
+        do_file = "/dataa/phucdt/vocodetect/hifi-gan/cp_16k/do_00255000"
+        
+        # cp_path = './pretrained/xlsr2_300m.pt'   # Change the pre-trained XLSR model path. 
+        # model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
+        self.device=device
+        self.mpd = MultiPeriodDiscriminator()
+        self.msd = MultiScaleDiscriminator()
+        self.out_dim = 1024
+        return
+
+    def extract_feat(self, input_data):
+        
+        # put the model to GPU if it not there
+        input_data = input_data.unsqueeze(1)
+        # print(input_data.shape)
+        if next(self.mpd.parameters()).device != input_data.device \
+           or next(self.mpd.parameters()).dtype != input_data.dtype:
+            self.mpd.to(input_data.device, dtype=input_data.dtype)
+            self.mpd.train()
+
+        # put the model to GPU if it not there
+        if next(self.msd.parameters()).device != input_data.device \
+           or next(self.msd.parameters()).dtype != input_data.dtype:
+            self.msd.to(input_data.device, dtype=input_data.dtype)
+            self.msd.train()
+        
+        if True:
+            # # input should be in shape (batch, 1, length)
+            if input_data.ndim == 2:
+                input_tmp = input_data.unsqueeze(1)
+            else:
+                input_tmp = input_data
+                
+            # [batch, length, dim]
+            # first experiment
+            # emb = self.model(input_tmp, mask=False, features_only=True)['x']
+            # _, _, fmap_f_r, _ = self.mpd(input_tmp,input_tmp)
+            # _, _, fmap_s_r, _ = self.msd(input_tmp,input_tmp)
+            
+            # emb_d = torch.flatten(fmap_f_r[-1][-1], 1, -1)
+            # emb_s = torch.flatten(fmap_s_r[-1][-1], 1, -1)
+            # batch_size = emb_s.shape[0]
+
+            # emb = torch.cat((emb_d, emb_s),1)
+            # emb = emb.reshape(batch_size,1,96,11).squeeze(1)
+            
+            # second experiment
+            _, _, fmap_s_r, _ = self.msd(input_tmp,input_tmp)
+            emb = fmap_s_r[0][6].transpose(1, 2) # [batch, length, dim]
+        return emb
+
 
 class SSLModel(nn.Module):
     def __init__(self,device):
         super(SSLModel, self).__init__()
         
-        cp_path = './pretrained/chinese-wav2vec2-base-fairseq-ckpt.pt'   # Change the pre-trained XLSR model path. 
+        cp_path = './pretrained/xlsr2_300m.pt'   # Change the pre-trained XLSR model path. 
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
         self.device=device
-        self.out_dim = 768
+        self.out_dim = 1024
         return
 
     def extract_feat(self, input_data):
@@ -36,7 +93,6 @@ class SSLModel(nn.Module):
             self.model.to(input_data.device, dtype=input_data.dtype)
             self.model.train()
 
-        
         if True:
             # input should be in shape (batch, length)
             if input_data.ndim == 3:
@@ -46,7 +102,6 @@ class SSLModel(nn.Module):
                 
             # [batch, length, dim]
             emb = self.model(input_tmp, mask=False, features_only=True)['x']
-            # print(emb.shape)
         return emb
 
 
@@ -445,7 +500,8 @@ class Model(nn.Module):
         ####
         # create network wav2vec 2.0
         ####
-        self.ssl_model = SSLModel(self.device)
+        # self.ssl_model = SSLModel(self.device)
+        self.ssl_model = HifiDis(self.device)
         self.LL = nn.Linear(self.ssl_model.out_dim, 128)
 
         self.first_bn = nn.BatchNorm2d(num_features=1)

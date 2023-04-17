@@ -1,5 +1,5 @@
 import random
-from typing import Union
+from typing import Union, Any, List
 
 import numpy as np
 import torch
@@ -8,12 +8,120 @@ import torch.nn.functional as F
 from torch import Tensor
 import fairseq
 
+import torch
+from pytorch_ood.loss import CenterLoss, CrossEntropyLoss
+from pytorch_ood.utils import is_known, is_unknown
 
-___author__ = "Hemlata Tak"
-__email__ = "tak@eurecom.fr"
+___author__ = "PHUCDT"
+__email__ = "phucdt@soongsil.ac.kr"
 
 ############################
-## FOR fine-tuned SSL MODEL
+## Multi-Class Hypersphere Anomaly Detection
+## https://ieeexplore.ieee.org/document/9956337 
+## https://github.com/kkirchheim/mchad
+############################
+
+class MCHAD(nn.Module):
+    """
+    Multi Class Hypersphere Anomaly Detection model.
+
+    Uses a radius of 0 for the hyperspheres by default.
+    """
+
+    def __init__(
+        self,
+        args,
+        device,
+        weight_center=0.5,
+        weight_oe=0.0005,
+        weight_ce=1.5,
+        n_classes=7,
+        n_embedding=16,
+        margin=1.0,
+        radius=0.0,
+        save_embeds=False,
+        pretrained=None,
+        **kwargs,
+    ):
+        super(MCHAD, self).__init__()
+        self.model = Model(args, device, n_embedding)
+
+
+        # loss function components: center loss, cross-entropy and regularization
+        self.soft_margin_loss = CenterLoss(n_classes=n_classes, n_dim=n_embedding, radius=radius)
+        self.nll_loss = CrossEntropyLoss()
+        self.regu_loss = CenterRegularizationLoss(margin=margin)
+
+        self.weight_oe = weight_oe
+        self.weight_center = weight_center
+        self.weight_ce = weight_ce
+
+        # count the number of calls to test_epoch_end
+        self._test_epoch = 0
+
+        self.save_embeds = save_embeds
+
+    def forward(self, x: torch.Tensor):
+        return self.model(x)
+
+    def step(self, z, y):
+
+        distmat = self.soft_margin_loss.calculate_distances(z)
+        loss_center = self.soft_margin_loss(distmat, y)
+        # cross-entropy with integrated softmax becomes softmin with e^-x
+        loss_nll = self.nll_loss(-distmat, y)
+        loss_out = self.regu_loss(distmat, y)
+
+        y_hat = torch.argmin(distmat, dim=1)
+        
+        loss = (
+            self.weight_center * loss_center
+            + self.weight_ce * loss_nll
+            + self.weight_oe * loss_out
+        )
+
+        return loss, y_hat, distmat
+
+    def predict(self, x: torch.Tensor):
+        z = self.model(x)
+        distmat = self.soft_margin_loss.calculate_distances(z)
+        y_hat = torch.argmin(distmat, dim=1)
+        return y_hat
+    
+
+
+class CenterRegularizationLoss(nn.Module):
+    """
+    Regularization Term, uses sum reduction
+    """
+
+    def __init__(self, margin):
+        """
+
+        :param margin: Margin around centers of the spheres (i.e. including the original radius)
+        """
+        super(CenterRegularizationLoss, self).__init__()
+        self.margin = torch.nn.Parameter(torch.tensor([margin]).float())
+        # These are fixed, so they do not require gradients
+        self.margin.requires_grad = False
+
+    def forward(self, distmat, target) -> torch.Tensor:
+        """
+        :param distmat: distance matrix of samples
+        :param target: target label of samples
+        """
+        unknown = is_unknown(target)
+
+        if unknown.any():
+            d = (self.margin.pow(2) - distmat[unknown].pow(2)).relu().sum(dim=1)
+            # apply reduction
+            return d.sum()
+
+        return torch.tensor(0.0, device=distmat.device)
+
+
+############################
+## ASIST-SSL model
 ############################
 
 
@@ -46,7 +154,6 @@ class SSLModel(nn.Module):
                 
             # [batch, length, dim]
             emb = self.model(input_tmp, mask=False, features_only=True)['x']
-            # print(emb.shape)
         return emb
 
 
@@ -431,7 +538,7 @@ class Residual_block(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, args,device):
+    def __init__(self, args, device, n_embedding):
         super().__init__()
         self.device = device
         
@@ -502,7 +609,7 @@ class Model(nn.Module):
         self.pool_hS2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         self.pool_hT2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         
-        self.out_layer = nn.Linear(5 * gat_dims[1], 2)
+        self.out_layer = nn.Linear(5 * gat_dims[1], n_embedding)
 
     def forward(self, x):
         #-------pre-trained Wav2vec model fine tunning ------------------------##

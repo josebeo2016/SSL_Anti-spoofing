@@ -26,15 +26,13 @@ def evaluate_accuracy(dev_loader, model, device):
     # weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss()
     num_correct = 0.0
-    for batch_x, batch_fs, batch_y in dev_loader:
+    for batch_x, batch_y in dev_loader:
         
         batch_size = batch_x.size(0)
         num_total += batch_size
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
-        
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x, batch_fs)
+        batch_out = model(batch_x)
         
         _, batch_y_hat, _ = model.step(batch_out, batch_y)
         num_correct += (batch_y_hat == batch_y).sum(dim=0).item()
@@ -50,12 +48,11 @@ def extract_embedding(
     data_loader = DataLoader(dataset, batch_size=32, shuffle=False, drop_last=False)
     model.eval()
     
-    for batch_x, batch_fs, utt_id in data_loader:
+    for batch_x, utt_id in data_loader:
 
         batch_size = batch_x.size(0)
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
-        batch_out = model(batch_x, batch_fs)
+        batch_out = model(batch_x)
 
         for id, sco in zip(utt_id, batch_out.tolist()):
             torch.save(sco, save_path + "/" + id)
@@ -73,14 +70,13 @@ def produce_evaluation_file(dataset, model, device, save_path):
     score_list = []
     emb_list = []
     
-    for batch_x, batch_fs, utt_id in data_loader:
+    for batch_x, utt_id in data_loader:
         fname_list = []
         score_list = []  
         batch_size = batch_x.size(0)
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
         
-        _, batch_out_y = model.predict(batch_x, batch_fs)
+        _, batch_out_y = model.predict(batch_x)
 
         # add outputs
         fname_list.extend(utt_id)
@@ -106,15 +102,14 @@ def train_epoch(train_loader, model, lr,optim, device):
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    for batch_x, batch_fs, batch_y in train_loader:
+    for batch_x, batch_y in train_loader:
        
         batch_size = batch_x.size(0)
         num_total += batch_size
         
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x, batch_fs)
+        batch_out = model(batch_x)
         
         batch_loss, _,_ = model.step(batch_out, batch_y)
         

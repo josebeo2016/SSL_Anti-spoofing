@@ -21,11 +21,12 @@ class SSLModel(nn.Module):
     def __init__(self,device):
         super(SSLModel, self).__init__()
         
-        cp_path = './pretrained/chinese-wav2vec2-base-fairseq-ckpt.pt'   # Change the pre-trained XLSR model path. 
+        cp_path = './pretrained/xlsr2_300m.pt'
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
         self.device=device
-        self.out_dim = 768
+
+        self.out_dim = 1024
         return
 
     def extract_feat(self, input_data):

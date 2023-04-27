@@ -9,7 +9,7 @@ $: python PATH_TO_SCORE_FILE PATH_TO_GROUDTRUTH_DIR phase
     Please follow README, download the key files, and use ./keys
  -phase: either progress, eval, or hidden_track
 Example:
-$: python evaluate.py score.txt ./keys eval
+$: python evaluate.py score.txt keys.txt eval
 """
 import sys, os.path
 import numpy as np

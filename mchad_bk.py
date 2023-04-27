@@ -54,10 +54,10 @@ class MCHAD(nn.Module):
             parser1 = yaml.safe_load(f_yaml)
         
         self.model = RawNet(parser1['model'], device, n_embedding)
-        self.bn = nn.BatchNorm1d(n_embedding+1)
+
 
         # loss function components: center loss, cross-entropy and regularization
-        self.soft_margin_loss = CenterLoss(n_classes=n_classes, n_dim=n_embedding+1, radius=radius)
+        self.soft_margin_loss = CenterLoss(n_classes=n_classes, n_dim=n_embedding, radius=radius)
         self.nll_loss = CrossEntropyLoss()
         self.regu_loss = CenterRegularizationLoss(margin=margin)
 
@@ -70,13 +70,8 @@ class MCHAD(nn.Module):
 
         self.save_embeds = save_embeds
 
-    def forward(self, x: torch.Tensor, fs: torch.Tensor):
-        
-        out = self.model(x)
-        fs = fs.unsqueeze(1)
-        out = torch.cat((out, fs), dim=1)
-        out = self.bn(out)
-        return out
+    def forward(self, x: torch.Tensor):
+        return self.model(x)
 
     def step(self, z, y):
 
@@ -97,8 +92,8 @@ class MCHAD(nn.Module):
 
         return loss, y_hat, distmat
 
-    def predict(self, x: torch.Tensor, fs: torch.Tensor):
-        z = self.forward(x,fs)
+    def predict(self, x: torch.Tensor):
+        z = self.model(x)
         distmat = self.soft_margin_loss.calculate_distances(z)
         value, y_hat = torch.min(distmat, dim=1)
         # for i in range(len(y_hat)):

@@ -7,8 +7,8 @@ from torch import nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
-from data_utils_T3 import genSpoof_list, Dataset_for, Dataset_for_eval
-from mchad import MCHAD
+from data_utils_for import genSpoof_list, Dataset_for, Dataset_for_eval
+from model import Model
 # from model_phucdt import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
@@ -23,44 +23,55 @@ def evaluate_accuracy(dev_loader, model, device):
     val_loss = 0.0
     num_total = 0.0
     model.eval()
-    # weight = torch.FloatTensor([0.1, 0.9]).to(device)
-    criterion = nn.CrossEntropyLoss()
-    num_correct = 0.0
-    for batch_x, batch_fs, batch_y in dev_loader:
+    weight = torch.FloatTensor([0.1, 0.9]).to(device)
+    criterion = nn.CrossEntropyLoss(weight=weight)
+    for batch_x, batch_y in dev_loader:
         
         batch_size = batch_x.size(0)
         num_total += batch_size
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
-        
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x, batch_fs)
+        batch_out = model(batch_x)
         
-        _, batch_y_hat, _ = model.step(batch_out, batch_y)
-        num_correct += (batch_y_hat == batch_y).sum(dim=0).item()
+        batch_loss = criterion(batch_out, batch_y)
+        val_loss += (batch_loss.item() * batch_size)
+        
+    val_loss /= num_total
    
-    return 100 * (num_correct / num_total)
+    return val_loss
 
-def extract_embedding(
-    dataset,
-    model,
-    device,
-    save_path):
-    """Perform evaluation and save the score to a file"""
-    data_loader = DataLoader(dataset, batch_size=32, shuffle=False, drop_last=False)
+
+def produce_prediction_file(dataset, model, device, save_path):
+    data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
     model.eval()
     
-    for batch_x, batch_fs, utt_id in data_loader:
-
+    fname_list = []
+    key_list = []
+    score_list = []
+    
+    for batch_x, utt_id in data_loader:
+        fname_list = []
+        score_list = []  
         batch_size = batch_x.size(0)
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
-        batch_out = model(batch_x, batch_fs)
+        
+        batch_out = model(batch_x)
+        
+        batch_score = (batch_out[:, 1]  
+                       ).data.cpu().numpy().ravel() 
+        _, batch_pred = batch_out.max(dim=1)
 
-        for id, sco in zip(utt_id, batch_out.tolist()):
-            torch.save(sco, save_path + "/" + id)
-
-    print("bio saved to {}".format(save_path))
+        # add outputs
+        fname_list.extend(utt_id)
+        score_list.extend(batch_pred.tolist())
+        
+        with open(save_path, 'a+') as fh:
+            for f, cm in zip(fname_list,score_list):
+                fh.write('{} {}\n'.format(f, cm))
+        fh.close()   
+    print('Scores saved to {}'.format(save_path))
 
 def produce_evaluation_file(dataset, model, device, save_path):
     data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
@@ -71,29 +82,26 @@ def produce_evaluation_file(dataset, model, device, save_path):
     fname_list = []
     key_list = []
     score_list = []
-    emb_list = []
     
-    for batch_x, batch_fs, utt_id in data_loader:
+    for batch_x, utt_id in data_loader:
         fname_list = []
         score_list = []  
         batch_size = batch_x.size(0)
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
         
-        _, batch_out_y = model.predict(batch_x, batch_fs)
-
+        batch_out = model(batch_x)
+        
+        batch_score = (batch_out[:, 1]  
+                       ).data.cpu().numpy().ravel() 
         # add outputs
         fname_list.extend(utt_id)
-        score_list.extend(batch_out_y.detach().cpu().tolist())
-        # emb_list.extend(batch_out_z.detach().cpu().tolist())
+        score_list.extend(batch_score.tolist())
         
         with open(save_path, 'a+') as fh:
             for f, cm in zip(fname_list,score_list):
                 fh.write('{} {}\n'.format(f, cm))
         fh.close()   
     print('Scores saved to {}'.format(save_path))
-
-
 
 def train_epoch(train_loader, model, lr,optim, device):
     running_loss = 0
@@ -106,17 +114,16 @@ def train_epoch(train_loader, model, lr,optim, device):
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    for batch_x, batch_fs, batch_y in train_loader:
+    for batch_x, batch_y in train_loader:
        
         batch_size = batch_x.size(0)
         num_total += batch_size
         
         batch_x = batch_x.to(device)
-        batch_fs = batch_fs.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x, batch_fs)
+        batch_out = model(batch_x)
         
-        batch_loss, _,_ = model.step(batch_out, batch_y)
+        batch_loss = criterion(batch_out, batch_y)
         
         running_loss += (batch_loss.item() * batch_size)
        
@@ -169,8 +176,9 @@ if __name__ == '__main__':
     parser.add_argument('--eval', action='store_true', default=False,
                         help='eval mode')
     parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
-    parser.add_argument('--extract_emb', action='store_true', default=False,help='Extract embeddings of database_path to eval_output directory')
     parser.add_argument('--eval_part', type=int, default=0)
+    parser.add_argument('--predict', action='store_true', default=False,
+                        help='get the predicted label instead of score')
     # backend options
     parser.add_argument('--cudnn-deterministic-toggle', action='store_false', \
                         default=True, 
@@ -228,10 +236,8 @@ if __name__ == '__main__':
     ##===================================================Rawboost data augmentation ======================================================================#
     
 
-    if not os.path.exists('models_T3'):
-        os.mkdir('models_T3')
-    if not os.path.exists('logs_T3'):
-        os.mkdir('logs_T3')
+    if not os.path.exists('models'):
+        os.mkdir('models')
     args = parser.parse_args()
  
     #make experiment reproducible
@@ -246,13 +252,12 @@ if __name__ == '__main__':
     # prefix_2019 = 'ASVspoof2019.{}'.format(track)
     # prefix_2021 = 'ASVspoof2021.{}'.format(track)
     
-    
     # #define model saving path
     model_tag = 'model_{}_{}_{}_{}'.format(
         args.loss, args.num_epochs, args.batch_size, args.lr)
     if args.comment:
         model_tag = model_tag + '_{}'.format(args.comment)
-    model_save_path = os.path.join('models_T3', model_tag)
+    model_save_path = os.path.join('models', model_tag)
 
     #set model save directory
     if not os.path.exists(model_save_path):
@@ -262,7 +267,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'                  
     print('Device: {}'.format(device))
     
-    model = MCHAD(args, device)
+    model = Model(args,device)
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
     model =model.to(device)
     print('nb_params:',nb_params)
@@ -274,20 +279,16 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(args.model_path,map_location=device))
         print('Model loaded : {}'.format(args.model_path))
 
-    #extract embeddings
-    if args.extract_emb:
-        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
-        print('no. of eval trials',len(file_eval))
-        eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'/'))
-        extract_embedding(eval_set, model, device, args.eval_output)
-        sys.exit(0)
 
     #evaluation 
     if args.eval:
         file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
         print('no. of eval trials',len(file_eval))
         eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'/'))
-        produce_evaluation_file(eval_set, model, device, args.eval_output)
+        if (args.predict):
+            produce_prediction_file(eval_set, model, device, args.eval_output)
+        else:
+            produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)
    
      
@@ -320,7 +321,7 @@ if __name__ == '__main__':
 
     # Training and validation 
     num_epochs = args.num_epochs
-    writer = SummaryWriter('logs_T3/{}'.format(model_tag))
+    writer = SummaryWriter('logs/{}'.format(model_tag))
     
     for epoch in range(num_epochs):
         

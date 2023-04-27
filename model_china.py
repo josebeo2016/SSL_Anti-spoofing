@@ -1,5 +1,5 @@
 import random
-from typing import Union, Any, List
+from typing import Union
 
 import numpy as np
 import torch
@@ -7,139 +7,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 import fairseq
-import yaml
 
-import torch
-from pytorch_ood.loss import CenterLoss, CrossEntropyLoss
-from pytorch_ood.utils import is_known, is_unknown
 
-from rawnet2 import RawNet
-
-___author__ = "PHUCDT"
-__email__ = "phucdt@soongsil.ac.kr"
+___author__ = "Hemlata Tak"
+__email__ = "tak@eurecom.fr"
 
 ############################
-## Multi-Class Hypersphere Anomaly Detection
-## https://ieeexplore.ieee.org/document/9956337 
-## https://github.com/kkirchheim/mchad
-############################
-
-class MCHAD(nn.Module):
-    """
-    Multi Class Hypersphere Anomaly Detection model.
-
-    Uses a radius of 0 for the hyperspheres by default.
-    """
-
-    def __init__(
-        self,
-        args,
-        device,
-        weight_center=0.5,
-        weight_oe=0.0005,
-        weight_ce=1.5,
-        n_classes=7,
-        n_embedding=16,
-        margin=1.0,
-        radius=0.0,
-        save_embeds=False,
-        pretrained=None,
-        **kwargs,
-    ):
-        super(MCHAD, self).__init__()
-        # self.model = Model(args, device, n_embedding)
-        
-        #config for rawnet:
-        with open("rawnet_config.yaml", 'r') as f_yaml:
-            parser1 = yaml.safe_load(f_yaml)
-        
-        self.model = RawNet(parser1['model'], device, n_embedding)
-        self.bn = nn.BatchNorm1d(n_embedding+1)
-
-        # loss function components: center loss, cross-entropy and regularization
-        self.soft_margin_loss = CenterLoss(n_classes=n_classes, n_dim=n_embedding+1, radius=radius)
-        self.nll_loss = CrossEntropyLoss()
-        self.regu_loss = CenterRegularizationLoss(margin=margin)
-
-        self.weight_oe = weight_oe
-        self.weight_center = weight_center
-        self.weight_ce = weight_ce
-
-        # count the number of calls to test_epoch_end
-        self._test_epoch = 0
-
-        self.save_embeds = save_embeds
-
-    def forward(self, x: torch.Tensor, fs: torch.Tensor):
-        
-        out = self.model(x)
-        fs = fs.unsqueeze(1)
-        out = torch.cat((out, fs), dim=1)
-        out = self.bn(out)
-        return out
-
-    def step(self, z, y):
-
-        distmat = self.soft_margin_loss.calculate_distances(z)
-        loss_center = self.soft_margin_loss(distmat, y)
-        # cross-entropy with integrated softmax becomes softmin with e^-x
-        loss_nll = self.nll_loss(-distmat, y)
-        loss_out = self.regu_loss(distmat, y)
-        # print(distmat)
-
-        y_hat = torch.argmin(distmat, dim=1)
-        
-        loss = (
-            self.weight_center * loss_center
-            + self.weight_ce * loss_nll
-            + self.weight_oe * loss_out
-        )
-
-        return loss, y_hat, distmat
-
-    def predict(self, x: torch.Tensor, fs: torch.Tensor):
-        z = self.forward(x,fs)
-        distmat = self.soft_margin_loss.calculate_distances(z)
-        value, y_hat = torch.min(distmat, dim=1)
-        # for i in range(len(y_hat)):
-        #     if value[i] > 2:
-        #         y_hat[i] = 7
-        return z, y_hat
-    
-
-
-class CenterRegularizationLoss(nn.Module):
-    """
-    Regularization Term, uses sum reduction
-    """
-
-    def __init__(self, margin):
-        """
-
-        :param margin: Margin around centers of the spheres (i.e. including the original radius)
-        """
-        super(CenterRegularizationLoss, self).__init__()
-        self.margin = torch.nn.Parameter(torch.tensor([margin]).float())
-        # These are fixed, so they do not require gradients
-        self.margin.requires_grad = False
-
-    def forward(self, distmat, target) -> torch.Tensor:
-        """
-        :param distmat: distance matrix of samples
-        :param target: target label of samples
-        """
-        unknown = is_unknown(target)
-
-        if unknown.any():
-            d = (self.margin.pow(2) - distmat[unknown].pow(2)).relu().sum(dim=1)
-            # apply reduction
-            return d.sum()
-
-        return torch.tensor(0.0, device=distmat.device)
-
-
-############################
-## ASIST-SSL model
+## FOR fine-tuned SSL MODEL
 ############################
 
 
@@ -147,11 +21,13 @@ class SSLModel(nn.Module):
     def __init__(self,device):
         super(SSLModel, self).__init__()
         
-        cp_path = './pretrained/chinese-wav2vec2-base-fairseq-ckpt.pt'   # Change the pre-trained XLSR model path. 
+        cp_path = './pretrained/chinese-wav2vec2-base-fairseq-ckpt.pt'   # Change the pre-trained XLSR model path.
+        # cp_path = './pretrained/xlsr2_300m.pt'
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
         self.device=device
         self.out_dim = 768
+        # self.out_dim = 1024
         return
 
     def extract_feat(self, input_data):
@@ -172,6 +48,7 @@ class SSLModel(nn.Module):
                 
             # [batch, length, dim]
             emb = self.model(input_tmp, mask=False, features_only=True)['x']
+            # print(emb.shape)
         return emb
 
 
@@ -556,7 +433,7 @@ class Residual_block(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, args, device, n_embedding):
+    def __init__(self, args,device):
         super().__init__()
         self.device = device
         
@@ -627,7 +504,7 @@ class Model(nn.Module):
         self.pool_hS2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         self.pool_hT2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         
-        self.out_layer = nn.Linear(5 * gat_dims[1], n_embedding)
+        self.out_layer = nn.Linear(5 * gat_dims[1], 2)
 
     def forward(self, x):
         #-------pre-trained Wav2vec model fine tunning ------------------------##

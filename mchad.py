@@ -39,7 +39,7 @@ class MCHAD(nn.Module):
         weight_oe=0.0005,
         weight_ce=1.5,
         n_classes=7,
-        n_embedding=16,
+        n_embedding=7,
         margin=1.0,
         radius=0.0,
         save_embeds=False,
@@ -73,6 +73,7 @@ class MCHAD(nn.Module):
     def forward(self, x: torch.Tensor, fs: torch.Tensor):
         
         out = self.model(x)
+        fs = (fs/10000)**2
         fs = fs.unsqueeze(1)
         out = torch.cat((out, fs), dim=1)
         out = self.bn(out)

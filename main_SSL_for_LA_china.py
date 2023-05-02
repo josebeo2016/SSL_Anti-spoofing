@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
 from data_utils_for import genSpoof_list, Dataset_for, Dataset_for_eval
-from model import Model
+from model_china import Model
 # from model_phucdt import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed

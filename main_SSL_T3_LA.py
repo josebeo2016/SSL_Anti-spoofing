@@ -63,7 +63,7 @@ def extract_embedding(
     print("bio saved to {}".format(save_path))
 
 def produce_evaluation_file(dataset, model, device, save_path):
-    data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
+    data_loader = DataLoader(dataset, batch_size=128, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
     model.eval()

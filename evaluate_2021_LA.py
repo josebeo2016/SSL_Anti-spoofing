@@ -66,9 +66,9 @@ def performance(cm_scores, Pfa_asv, Pmiss_asv, Pfa_spoof_asv, invert=False):
     spoof_cm = cm_scores[cm_scores[5]=='spoof']['1_x'].values
 
     if invert==False:
-        eer_cm = em.compute_eer(bona_cm, spoof_cm)[0]
+        eer_cm, th = em.compute_eer(bona_cm, spoof_cm)
     else:
-        eer_cm = em.compute_eer(-bona_cm, -spoof_cm)[0]
+        eer_cm, th = em.compute_eer(-bona_cm, -spoof_cm)
 
     if invert==False:
         tDCF_curve, _ = em.compute_tDCF(bona_cm, spoof_cm, Pfa_asv, Pmiss_asv, Pfa_spoof_asv, cost_model, False)
@@ -78,7 +78,7 @@ def performance(cm_scores, Pfa_asv, Pmiss_asv, Pfa_spoof_asv, invert=False):
     min_tDCF_index = np.argmin(tDCF_curve)
     min_tDCF = tDCF_curve[min_tDCF_index]
 
-    return min_tDCF, eer_cm
+    return min_tDCF, eer_cm, th
 
 
 def eval_to_score_file(score_file, cm_key_file):
@@ -92,14 +92,15 @@ def eval_to_score_file(score_file, cm_key_file):
 
     # check here for progress vs eval set
     cm_scores = submission_scores.merge(cm_data[cm_data[7] == phase], left_on=0, right_on=1, how='inner')
-    min_tDCF, eer_cm = performance(cm_scores, Pfa_asv, Pmiss_asv, Pfa_spoof_asv)
+    min_tDCF, eer_cm, th = performance(cm_scores, Pfa_asv, Pmiss_asv, Pfa_spoof_asv)
 
     out_data = "min_tDCF: %.4f\n" % min_tDCF
     out_data += "eer: %.2f\n" % (100*eer_cm)
+    out_data += "threshold: %.4f\n" % th
     print(out_data, end="")
 
     # just in case that the submitted file reverses the sign of positive and negative scores
-    min_tDCF2, eer_cm2 = performance(cm_scores, Pfa_asv, Pmiss_asv, Pfa_spoof_asv, invert=True)
+    min_tDCF2, eer_cm2,_ = performance(cm_scores, Pfa_asv, Pmiss_asv, Pfa_spoof_asv, invert=True)
 
     if min_tDCF2 < min_tDCF:
         print(

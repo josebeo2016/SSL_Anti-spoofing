@@ -115,7 +115,7 @@ def train_epoch(train_loader, model, lr,optim, device):
     model.train()
 
     #set objective (Loss) functions
-    weight = torch.FloatTensor([0.1, 0.9]).to(device)
+    weight = torch.FloatTensor([0.5, 0.5]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     
     for batch_x, batch_y in train_loader:
@@ -287,7 +287,7 @@ if __name__ == '__main__':
 
     #evaluation 
     if args.eval:
-        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
+        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol_test.txt'),is_train=False,is_eval=True)
         print('no. of eval trials',len(file_eval))
         eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'/'))
         if (args.predict):
@@ -333,7 +333,7 @@ if __name__ == '__main__':
         running_loss, train_accuracy = train_epoch(train_loader,model, args.lr,optimizer, device)
         val_loss, val_accuracy = evaluate_accuracy(dev_loader, model, device)
         writer.add_scalar('train_accuracy', train_accuracy, epoch)
-        writer.add_scalar('val_accuracy', train_accuracy, epoch)
+        writer.add_scalar('val_accuracy', val_accuracy, epoch)
         writer.add_scalar('val_loss', val_loss, epoch)
         writer.add_scalar('loss', running_loss, epoch)
         print('\n{} - {} - {} '.format(epoch,

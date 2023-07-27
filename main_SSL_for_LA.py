@@ -282,9 +282,9 @@ if __name__ == '__main__':
 
     #evaluation 
     if args.eval:
-        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
+        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path,'protocol.txt'),is_eval=True)
         print('no. of eval trials',len(file_eval))
-        eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'/'))
+        eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path))
         if (args.predict):
             produce_prediction_file(eval_set, model, device, args.eval_output)
         else:
@@ -293,11 +293,11 @@ if __name__ == '__main__':
    
      
     # define train dataloader
-    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.train_path+'protocol.txt'),is_train=True,is_eval=False)
+    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.database_path,'protocol.txt'),is_train=True)
     
     print('no. of training trials',len(file_train))
     
-    train_set=Dataset_for(args,list_IDs = file_train,labels = d_label_trn,base_dir = args.train_path+'/',algo=args.algo)
+    train_set=Dataset_for(args,list_IDs = file_train,labels = d_label_trn,base_dir = args.database_path+'/',algo=args.algo)
     
     train_loader = DataLoader(train_set, batch_size=args.batch_size,num_workers=8, shuffle=True,drop_last = True)
     
@@ -306,7 +306,7 @@ if __name__ == '__main__':
 
     # define validation dataloader
 
-    d_label_dev,file_dev = genSpoof_list(dir_meta = args.dev_path+'protocol.txt',is_train=False,is_eval=False)
+    d_label_dev,file_dev = genSpoof_list(dir_meta = os.path.join(args.database_path,'protocol.txt'),is_dev=True)
     
     print('no. of validation trials',len(file_dev))
     

@@ -15,32 +15,35 @@ logging.basicConfig(filename='errors.log', level=logging.DEBUG)
 ___author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
 
-
-def genSpoof_list( dir_meta,is_train=False,is_eval=False):
+def genSpoof_list( dir_meta,is_train=False,is_eval=False, is_dev=False):
     
     d_meta = {}
     file_list=[]
     with open(dir_meta, 'r') as f:
          l_meta = f.readlines()
+    
 
     if (is_train):
         for line in l_meta:
              key, subset, label = line.strip().split()
-             file_list.append(key)
-             d_meta[key] = int(label)
-        return d_meta,file_list
+             if subset == 'train':
+                file_list.append(key)
+                d_meta[key] = 1 if label == 'bonafide' else 0
+        return d_meta, file_list
+    
+    if (is_dev):
+        for line in l_meta:
+             key, subset, label = line.strip().split()
+             if subset == 'dev':
+                file_list.append(key)
+                d_meta[key] = 1 if label == 'bonafide' else 0
+        return d_meta, file_list
     
     elif(is_eval):
         for line in l_meta:
             key, subset, label = line.strip().split()
             file_list.append(key)
         return file_list
-    else:
-        for line in l_meta:
-             key, subset, label = line.strip().split()
-             file_list.append(key)
-             d_meta[key] = int(label)
-        return d_meta,file_list
 
 
 
@@ -78,14 +81,12 @@ class Dataset_for(Dataset):
             
             utt_id = self.list_IDs[index]
             # X,fs = librosa.load(self.base_dir+'flac/'+utt_id+'.flac', sr=16000) 
-            X, fs = librosa.load(self.base_dir + "/" + utt_id, sr=None)
-            
-
+            X, fs = librosa.load(self.base_dir + "/" + utt_id, sr=16000)
             X_pad= pad(X,utt_id,self.cut)
             x_inp= Tensor(X_pad)
             target = self.labels[utt_id]
             
-            return x_inp, fs, target
+            return x_inp, target
             
 class Dataset_for_eval(Dataset):
 	def __init__(self, list_IDs, base_dir):
@@ -103,9 +104,9 @@ class Dataset_for_eval(Dataset):
 	def __getitem__(self, index):
             
             utt_id = self.list_IDs[index]
-            X, fs = librosa.load(self.base_dir + "/" + utt_id, sr=None)
+            X, fs = librosa.load(self.base_dir + "/" + utt_id, sr=16000)
             X_pad = pad(X,utt_id,self.cut)
             
             x_inp = Tensor(X_pad)
-            return x_inp, fs, utt_id
+            return x_inp, utt_id
 

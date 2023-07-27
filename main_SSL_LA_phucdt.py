@@ -112,19 +112,7 @@ if __name__ == '__main__':
     %      |- ASVspoof2021_LA_eval/flac
     %      |- ASVspoof2019_LA_train/flac
     %      |- ASVspoof2019_LA_dev/flac
-
  
- 
-    '''
-
-    parser.add_argument('--protocols_path', type=str, default='database/', help='Change with path to user\'s LA database protocols directory address')
-    '''
-    % protocols_path/
-    %   |- ASVspoof_LA_cm_protocols
-    %      |- ASVspoof2021.LA.cm.eval.trl.txt
-    %      |- ASVspoof2019.LA.cm.dev.trl.txt 
-    %      |- ASVspoof2019.LA.cm.train.trn.txt
-  
     '''
 
     # Hyperparameters

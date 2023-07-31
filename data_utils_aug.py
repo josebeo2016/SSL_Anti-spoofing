@@ -43,7 +43,8 @@ def genSpoof_list( dir_meta,is_train=False,is_eval=False, is_dev=False):
     elif(is_eval):
         for line in l_meta:
             key, subset, label = line.strip().split()
-            file_list.append(key)
+            if (subset == 'eval'):
+                file_list.append(key)
         return file_list
     else:
         for line in l_meta:

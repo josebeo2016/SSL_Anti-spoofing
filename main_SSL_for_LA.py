@@ -40,6 +40,40 @@ def evaluate_accuracy(dev_loader, model, device):
    
     return val_loss
 
+def produce_prob_and_score_file(dataset, model, device, save_path):
+    data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
+    model.eval()
+    
+    fname_list = []
+    key_list = []
+    
+    for batch_x, utt_id in data_loader:
+        fname_list = []
+        score_list = []  
+        prob_list = []
+        batch_size = batch_x.size(0)
+        batch_x = batch_x.to(device)
+        
+        batch_out = model(batch_x)
+        
+        batch_score = (batch_out[:, 1]  
+                       ).data.cpu().numpy().ravel() 
+        # _, batch_pred = batch_out.max(dim=1)
+        # calculate probability
+        batch_prob = nn.Softmax(dim=1)(batch_out)
+
+        # add outputs
+        fname_list.extend(utt_id)
+        score_list.extend(batch_score.tolist())
+        prob_list.extend(batch_prob.tolist())
+        
+        with open(save_path, 'a+') as fh:
+            for f, cm, prob in zip(fname_list,score_list, prob_list):
+                fh.write('{} {} {}\n'.format(f, cm, prob[1]))
+        fh.close()   
+    print('Scores saved to {}'.format(save_path))
 
 def produce_prediction_file(dataset, model, device, save_path):
     data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
@@ -121,7 +155,9 @@ def train_epoch(train_loader, model, lr,optim, device):
         
         batch_x = batch_x.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
+        print("Batch_y.shape",batch_y.shape)
         batch_out = model(batch_x)
+        print("Batch_out.shape",batch_out.shape)
         
         batch_loss = criterion(batch_out, batch_y)
         
@@ -138,9 +174,7 @@ def train_epoch(train_loader, model, lr,optim, device):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
     # Dataset
-    parser.add_argument('--train_path', type=str, default='/your/path/to/data/', help='train set')
-    parser.add_argument('--dev_path', type=str, default='/your/path/to/data/', help='dev set')
-    parser.add_argument('--database_path', type=str, default='/your/path/to/data/', help='eval set')
+    parser.add_argument('--database_path', type=str, default='/your/path/to/data/', help='Database path')
     '''
     % database_path/
     %   | - protocol.txt
@@ -286,7 +320,7 @@ if __name__ == '__main__':
         print('no. of eval trials',len(file_eval))
         eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path))
         if (args.predict):
-            produce_prediction_file(eval_set, model, device, args.eval_output)
+            produce_prob_and_score_file(eval_set, model, device, args.eval_output)
         else:
             produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)
@@ -312,7 +346,7 @@ if __name__ == '__main__':
     
     dev_set = Dataset_for(args,list_IDs = file_dev,
 		labels = d_label_dev,
-		base_dir = args.dev_path+'/',algo=args.algo)
+		base_dir = args.database_path+'/',algo=args.algo)
     dev_loader = DataLoader(dev_set, batch_size=args.batch_size,num_workers=8, shuffle=False)
     del dev_set,d_label_dev
 

@@ -26,6 +26,8 @@ class SSLModel(nn.Module):
         cp_path = os.path.join(BASE_DIR,'pretrained/xlsr2_300m.pt')
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
+        self.model.to(device)
+        self.model.train()
         self.device=device
 
         self.out_dim = 1024
@@ -34,10 +36,10 @@ class SSLModel(nn.Module):
     def extract_feat(self, input_data):
         
         # put the model to GPU if it not there
-        if next(self.model.parameters()).device != input_data.device \
-           or next(self.model.parameters()).dtype != input_data.dtype:
-            self.model.to(input_data.device, dtype=input_data.dtype)
-            self.model.train()
+        # if next(self.model.parameters()).device != input_data.device \
+        #    or next(self.model.parameters()).dtype != input_data.dtype:
+        #     self.model.to(input_data.device, dtype=input_data.dtype)
+        #     self.model.train()
 
         
         if True:
@@ -434,7 +436,7 @@ class Residual_block(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, args,device):
+    def __init__(self, args, device):
         super().__init__()
         self.device = device
         
@@ -518,11 +520,13 @@ class Model(nn.Module):
         x = F.max_pool2d(x, (3, 3))
         x = self.first_bn(x)
         x = self.selu(x)
-
+        # phucdt
+        # x = self.drop(x)
         # RawNet2-based encoder
         x = self.encoder(x)
         x = self.first_bn1(x)
         x = self.selu(x)
+        
         
         w = self.attention(x)
         

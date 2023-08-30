@@ -66,16 +66,16 @@ def produce_prediction_file(dataset, model, device, save_path):
         
         batch_score = (batch_out[:, 1]  
                        ).data.cpu().numpy().ravel() 
-        _, batch_pred = batch_out.max(dim=1)
+        batch_prob = nn.Softmax(dim=1)(batch_out)
 
         # add outputs
         fname_list.extend(utt_id)
         score_list.extend(batch_score.tolist())
-        pred_list.extend(batch_pred.tolist())
+        pred_list.extend(batch_prob.tolist())
         
         with open(save_path, 'a+') as fh:
             for f, cm, pred in zip(fname_list,score_list, pred_list):
-                fh.write('{} {} {}\n'.format(f, cm, pred))
+                fh.write('{} {} {}\n'.format(f, cm, pred[0]*100))
         fh.close()   
     print('Scores saved to {}'.format(save_path))
 
@@ -109,24 +109,26 @@ def produce_evaluation_file(dataset, model, device, save_path):
         fh.close()   
     print('Scores saved to {}'.format(save_path))
 
-def train_epoch(train_loader, model, lr,optim, device):
+def train_epoch(train_loader, model, lr, optim, device):
     running_loss = 0
-    
     num_total = 0.0
     num_correct = 0.0
     model.train()
 
     #set objective (Loss) functions
-    weight = torch.FloatTensor([0.5, 0.5]).to(device)
+    weight = torch.FloatTensor([0.5, 0.5]).to('cuda')
     criterion = nn.CrossEntropyLoss(weight=weight)
     
     for batch_x, batch_y in train_loader:
+        if torch.cuda.device_count() > 1:
+            batch_x = batch_x.to('cuda')
+            batch_y = batch_y.view(-1).type(torch.int64).to('cuda')
+        else:
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.view(-1).type(torch.int64).to(device)
        
         batch_size = batch_x.size(0)
         num_total += batch_size
-        
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.view(-1).type(torch.int64).to(device)
         batch_out = model(batch_x)
         
         batch_loss = criterion(batch_out, batch_y)
@@ -267,8 +269,13 @@ if __name__ == '__main__':
     print('Device: {}'.format(device))
     
     model = Model(args,device)
+    model = model.to(device)
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
-    model =model.to(device)
+    
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        model = nn.DataParallel(model)
+
     print('nb_params:',nb_params)
 
     #set Adam optimizer

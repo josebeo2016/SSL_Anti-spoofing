@@ -40,9 +40,8 @@ def evaluate_accuracy(dev_loader, model, device):
    
     return val_loss
 
-
 def produce_prediction_file(dataset, model, device, save_path):
-    data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
+    data_loader = DataLoader(dataset, batch_size=14, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
     model.eval()
@@ -51,7 +50,7 @@ def produce_prediction_file(dataset, model, device, save_path):
     key_list = []
     score_list = []
     
-    for batch_x, utt_id in data_loader:
+    for batch_x,utt_id in data_loader:
         fname_list = []
         score_list = []  
         batch_size = batch_x.size(0)
@@ -61,17 +60,16 @@ def produce_prediction_file(dataset, model, device, save_path):
         
         batch_score = (batch_out[:, 1]  
                        ).data.cpu().numpy().ravel() 
-        _, batch_pred = batch_out.max(dim=1)
-
         # add outputs
         fname_list.extend(utt_id)
-        score_list.extend(batch_pred.tolist())
+        score_list.extend(batch_out.data.cpu().numpy().tolist())
         
         with open(save_path, 'a+') as fh:
             for f, cm in zip(fname_list,score_list):
-                fh.write('{} {}\n'.format(f, cm))
+                fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
         fh.close()   
     print('Scores saved to {}'.format(save_path))
+
 
 def produce_evaluation_file(dataset, model, device, save_path):
     data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
@@ -269,7 +267,8 @@ if __name__ == '__main__':
     
     model = Model(args,device)
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
-    model =model.to(device)
+    # model =model.to(device)
+    model =nn.DataParallel(model).to(device)
     print('nb_params:',nb_params)
 
     #set Adam optimizer

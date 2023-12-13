@@ -7,12 +7,12 @@ from torch import nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
-from data_utils_aug import genSpoof_list, Dataset_for, Dataset_for_eval
+from data_utils_aug import genSpoof_list, genSpoof_list_custom, Dataset_for, Dataset_for_eval
 from model import Model
 # from model_phucdt import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
-
+from tqdm import tqdm
 
 __author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
@@ -44,7 +44,77 @@ def evaluate_accuracy(dev_loader, model, device):
    
     return val_loss, val_accuracy
 
+def produce_emb_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
+    model.eval()
+    model.is_train = True
 
+    fname_list = []
+    key_list = []
+    score_list = []
+    
+    for batch_x, utt_id in tqdm(data_loader):
+        fname_list = []
+        score_list = []  
+        pred_list = []
+        batch_size = batch_x.size(0)
+        batch_x = batch_x.to(device)
+        
+        batch_out, batch_emb = model(batch_x)
+        score_list.extend(batch_out.data.cpu().numpy().tolist())
+        # add outputs
+        fname_list.extend(utt_id)
+
+        # save_path now must be a directory
+        # make dir if not exist
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        # Then each emb should be save in a file with name is utt_id
+        for f, emb in zip(fname_list,batch_emb):
+            # normalize filename
+            f = f.split('/')[-1].split('.')[0] # utt id only
+            save_path_utt = os.path.join(save_path, f)
+            np.save(save_path_utt, emb.data.cpu().numpy())
+        
+        # score file save into a single file
+        with open(os.path.join(save_path, "scores.txt"), 'a+') as fh:
+            for f, cm in zip(fname_list,score_list):
+                fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
+        fh.close()   
+    print('Scores saved to {}'.format(save_path))
+
+def produce_score_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
+    model.eval()
+    model.is_train = True
+
+    fname_list = []
+    key_list = []
+    score_list = []
+    
+    for batch_x, utt_id in tqdm(data_loader):
+        fname_list = []
+        score_list = []  
+        pred_list = []
+        batch_size = batch_x.size(0)
+        batch_x = batch_x.to(device)
+        
+        batch_out, batch_emb = model(batch_x)
+        score_list.extend(batch_out.data.cpu().numpy().tolist())
+        # add outputs
+        fname_list.extend(utt_id)
+
+        # score file save into a single file
+        with open(os.path.join(save_path, "scores.txt"), 'a+') as fh:
+            for f, cm in zip(fname_list,score_list):
+                fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
+        fh.close()   
+    print('Scores saved to {}'.format(save_path))
+    
 def produce_prediction_file(dataset, model, device, save_path):
     data_loader = DataLoader(dataset, batch_size=8, shuffle=False, drop_last=False)
     num_correct = 0.0
@@ -177,9 +247,12 @@ if __name__ == '__main__':
     parser.add_argument('--eval', action='store_true', default=False,
                         help='eval mode')
     parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
+    parser.add_argument('--custom', action='store_true', default=False,help='custom eval only')
     parser.add_argument('--eval_part', type=int, default=0)
     parser.add_argument('--predict', action='store_true', default=False,
                         help='get the predicted label instead of score')
+    parser.add_argument('--emb', action='store_true', default=False,
+                        help='get the embedding instead of score')
     # backend options
     parser.add_argument('--cudnn-deterministic-toggle', action='store_false', \
                         default=True, 
@@ -280,19 +353,28 @@ if __name__ == '__main__':
 
     #set Adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,weight_decay=args.weight_decay)
-    
     if args.model_path:
-        model.load_state_dict(torch.load(args.model_path,map_location=device))
-        print('Model loaded : {}'.format(args.model_path))
-
+        try:
+            model.load_state_dict(torch.load(args.model_path,map_location=device))
+            print('Model loaded : {}'.format(args.model_path))
+        except:
+            print('DataParallel enabled ')
+            model = Model(args,device)
+            model = model.to(device)
+            model = nn.DataParallel(model)
 
     #evaluation 
     if args.eval:
-        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
+        if args.custom:
+            file_eval = genSpoof_list_custom(dir_meta = os.path.join(args.database_path+'/protocol.txt'))
+        else:
+            file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
         print('no. of eval trials',len(file_eval))
         eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'/'))
         if (args.predict):
             produce_prediction_file(eval_set, model, device, args.eval_output)
+        elif (args.emb):
+            produce_emb_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
         else:
             produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)

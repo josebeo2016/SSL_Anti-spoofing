@@ -270,7 +270,7 @@ if __name__ == '__main__':
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
     model =model.to(device)
     print('nb_params:',nb_params)
-
+    model = nn.DataParallel(model)
     #set Adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,weight_decay=args.weight_decay)
     
@@ -278,7 +278,7 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(args.model_path,map_location=device))
         print('Model loaded : {}'.format(args.model_path))
 
-
+    
     #evaluation 
     if args.eval:
         file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)

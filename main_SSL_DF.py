@@ -11,6 +11,7 @@ from data_utils_SSL import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVs
 from model import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
+from tqdm import tqdm
 
 
 __author__ = "Hemlata Tak"
@@ -39,8 +40,78 @@ def evaluate_accuracy(dev_loader, model, device):
    
     return val_loss
 
+def produce_emb_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
+    model.eval()
+    
+
+    fname_list = []
+    key_list = []
+    score_list = []
+    
+    for batch_x, utt_id in tqdm(data_loader):
+        fname_list = []
+        score_list = []  
+        pred_list = []
+        batch_size = batch_x.size(0)
+        batch_x = batch_x.to(device)
+        
+        batch_out, batch_emb = model(batch_x)
+        score_list.extend(batch_out.data.cpu().numpy().tolist())
+        # add outputs
+        fname_list.extend(utt_id)
+
+        # save_path now must be a directory
+        # make dir if not exist
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        # Then each emb should be save in a file with name is utt_id
+        for f, emb in zip(fname_list,batch_emb):
+            # normalize filename
+            f = f.split('/')[-1].split('.')[0] # utt id only
+            save_path_utt = os.path.join(save_path, f)
+            np.save(save_path_utt, emb.data.cpu().numpy())
+        
+        # score file save into a single file
+        with open(os.path.join(save_path, "scores.txt"), 'a+') as fh:
+            for f, cm in zip(fname_list,score_list):
+                fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
+        fh.close()   
+    print('Scores saved to {}'.format(save_path))
 
 def produce_evaluation_file(dataset, model, device, save_path):
+    data_loader = DataLoader(dataset, batch_size=14, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
+    model.eval()
+    
+    fname_list = []
+    key_list = []
+    score_list = []
+    
+    for batch_x,utt_id in data_loader:
+        fname_list = []
+        score_list = []  
+        batch_size = batch_x.size(0)
+        batch_x = batch_x.to(device)
+        
+        batch_out, _ = model(batch_x)
+        
+        batch_score = (batch_out[:, 1]  
+                       ).data.cpu().numpy().ravel() 
+        # add outputs
+        fname_list.extend(utt_id)
+        score_list.extend(batch_score.tolist())
+        
+        with open(save_path, 'a+') as fh:
+            for f, cm in zip(fname_list,score_list):
+                fh.write('{} {}\n'.format(f, cm))
+        fh.close()   
+    print('Scores saved to {}'.format(save_path))
+
+def produce_prediction_file(dataset, model, device, save_path):
     data_loader = DataLoader(dataset, batch_size=14, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
@@ -62,11 +133,11 @@ def produce_evaluation_file(dataset, model, device, save_path):
                        ).data.cpu().numpy().ravel() 
         # add outputs
         fname_list.extend(utt_id)
-        score_list.extend(batch_score.tolist())
+        score_list.extend(batch_out.data.cpu().numpy().tolist())
         
         with open(save_path, 'a+') as fh:
             for f, cm in zip(fname_list,score_list):
-                fh.write('{} {}\n'.format(f, cm))
+                fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
         fh.close()   
     print('Scores saved to {}'.format(save_path))
 
@@ -149,6 +220,10 @@ if __name__ == '__main__':
                         help='eval mode')
     parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
     parser.add_argument('--eval_part', type=int, default=0)
+    parser.add_argument('--predict', action='store_true', default=False,
+                        help='get the predicted label instead of score')
+    parser.add_argument('--emb', action='store_true', default=False,
+                        help='get the embedding instead of score')
     # backend options
     parser.add_argument('--cudnn-deterministic-toggle', action='store_false', \
                         default=True, 
@@ -249,11 +324,17 @@ if __name__ == '__main__':
 
 
     #evaluation 
+
     if args.eval:
         file_eval = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'ASVspoof_{}_cm_protocols/{}.cm.eval.trl.txt'.format(track,prefix_2021)),is_train=False,is_eval=True)
         print('no. of eval trials',len(file_eval))
         eval_set=Dataset_ASVspoof2021_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'ASVspoof2021_{}_eval/'.format(args.track)))
-        produce_evaluation_file(eval_set, model, device, args.eval_output)
+        if (args.predict):
+            produce_prediction_file(eval_set, model, device, args.eval_output)
+        elif (args.emb):
+            produce_emb_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
+        else:
+            produce_evaluation_file(eval_set, model, device, args.eval_output)
         sys.exit(0)
    
     

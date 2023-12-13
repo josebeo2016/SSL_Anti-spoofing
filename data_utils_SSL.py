@@ -42,8 +42,17 @@ def genSpoof_list( dir_meta,is_train=False,is_eval=False):
              d_meta[key] = 1 if label == 'bonafide' else 0
         return d_meta,file_list
 
+def genSpoof_list_custom(dir_meta):
+    d_meta = {}
+    file_list=[]
+    with open(dir_meta, 'r') as f:
+        l_meta = f.readlines()
 
-
+    for line in l_meta:
+        utt = line.strip().split()[0]
+        file_list.append(utt)
+    return file_list
+        
 def pad(x, max_len=64600):
     x_len = x.shape[0]
     if x_len >= max_len:

@@ -20,14 +20,17 @@ __email__ = "tak@eurecom.fr"
 BASE_DIR=os.path.dirname(os.path.abspath(__file__))
 
 class SSLModel(nn.Module):
-    def __init__(self,device):
+    def __init__(self,device, is_eval=False):
         super(SSLModel, self).__init__()
         
         cp_path = os.path.join(BASE_DIR,'pretrained/xlsr2_300m.pt')
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
         self.model.to(device)
-        self.model.train()
+        if is_eval:
+            self.model.eval()
+        else:
+            self.model.train()
         self.device=device
 
         self.out_dim = 1024
@@ -446,11 +449,13 @@ class Model(nn.Module):
         pool_ratios = [0.5, 0.5, 0.5, 0.5]
         temperatures =  [2.0, 2.0, 100.0, 100.0]
 
+        self.is_train = True
 
         ####
         # create network wav2vec 2.0
         ####
-        self.ssl_model = SSLModel(self.device)
+        self.is_eval = args.eval
+        self.ssl_model = SSLModel(self.device, self.is_eval)
         self.LL = nn.Linear(self.ssl_model.out_dim, 128)
 
         self.first_bn = nn.BatchNorm2d(num_features=1)
@@ -602,4 +607,6 @@ class Model(nn.Module):
         last_hidden = self.drop(last_hidden)
         output = self.out_layer(last_hidden)
         
+        if self.is_train:
+            return output, last_hidden
         return output

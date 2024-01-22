@@ -9,9 +9,12 @@ from torch import Tensor
 import fairseq
 import os
 
+from conformer import ConformerBlock
+from torch.nn.modules.transformer import _get_clones
 
 ___author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
+__modified__ = "josebeo"
 
 ############################
 ## FOR fine-tuned SSL MODEL
@@ -20,24 +23,33 @@ __email__ = "tak@eurecom.fr"
 BASE_DIR=os.path.dirname(os.path.abspath(__file__))
 
 class SSLModel(nn.Module):
-    def __init__(self,device):
+    def __init__(self,device, is_train=True):
         super(SSLModel, self).__init__()
         
         cp_path = os.path.join(BASE_DIR,'pretrained/xlsr2_300m.pt')
         model, cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([cp_path])
         self.model = model[0]
+        self.model.to(device)
+        if is_train:
+            self.model.train()
+        else:
+            self.model.eval()
         self.device=device
 
         self.out_dim = 1024
         return
 
-    def extract_feat(self, input_data):
+    def extract_feat(self, input_data, is_train):
         
         # put the model to GPU if it not there
-        if next(self.model.parameters()).device != input_data.device \
-           or next(self.model.parameters()).dtype != input_data.dtype:
-            self.model.to(input_data.device, dtype=input_data.dtype)
+        # if next(self.model.parameters()).device != input_data.device \
+        #    or next(self.model.parameters()).dtype != input_data.dtype:
+        #     self.model.to(input_data.device, dtype=input_data.dtype)
+        #     self.model.train()
+        if is_train:
             self.model.train()
+        else:
+            self.model.eval()
 
         
         if True:
@@ -51,6 +63,62 @@ class SSLModel(nn.Module):
             emb = self.model(input_tmp, mask=False, features_only=True)['x']
             # print(emb.shape)
         return emb
+
+#---------Conformer back-end------------------------#
+'''
+Rosello, E., Gomez-Alanis, A., Gomez, A.M., Peinado, A. 
+(2023) A conformer-based classifier for variable-length utterance processing in anti-spoofing. 
+Proc. INTERSPEECH 2023, 5281-5285, doi: 10.21437/Interspeech.2023-1820
+'''
+class MyConformer(nn.Module):
+  def __init__(self, emb_size=128, heads=4, ffmult=4, exp_fac=2, kernel_size=16, n_encoders=1):
+    super(MyConformer, self).__init__()
+    self.dim_head=int(emb_size/heads)
+    self.dim=emb_size
+    self.heads=heads
+    self.kernel_size=kernel_size
+    self.n_encoders=n_encoders
+    self.encoder_blocks=_get_clones( ConformerBlock( dim = emb_size, dim_head=self.dim_head, heads= heads, 
+    ff_mult = ffmult, conv_expansion_factor = exp_fac, conv_kernel_size = kernel_size),
+    n_encoders)
+    self.class_token = nn.Parameter(torch.rand(1, emb_size))
+    self.fc5 = nn.Linear(emb_size, 2)
+
+  def forward(self, x, device): # x shape [bs, tiempo, frecuencia]
+    x = torch.stack([torch.vstack((self.class_token, x[i])) for i in range(len(x))])#[bs,1+tiempo,emb_size]
+    for layer in self.encoder_blocks:
+            x = layer(x) #[bs,1+tiempo,emb_size]
+    embedding=x[:,0,:] #[bs, emb_size]
+    out=self.fc5(embedding) #[bs,2]
+    return out, embedding
+
+class Conformer(nn.Module):
+    def __init__(self, args, device):
+        super().__init__()
+        self.device=device
+        ####
+        # create network wav2vec 2.0
+        ####
+        self.is_train = True
+        self.ssl_model = SSLModel(self.device, self.is_train)
+        self.LL = nn.Linear(1024, 144)
+        print('W2V + Conformer')
+        self.first_bn = nn.BatchNorm2d(num_features=1)
+        self.selu = nn.SELU(inplace=True)
+        self.conformer=MyConformer(emb_size=144, n_encoders=3,
+        heads=4, kernel_size=31)
+    def forward(self, x):
+        #-------pre-trained Wav2vec model fine tunning ------------------------##
+        x_ssl_feat = self.ssl_model.extract_feat(x.squeeze(-1), is_train=self.is_train)
+        x=self.LL(x_ssl_feat) #(bs,frame_number,feat_out_dim) (bs, 208, 256)
+        x = x.unsqueeze(dim=1) # add channel #(bs, 1, frame_number, 256)
+        x = self.first_bn(x)
+        x = self.selu(x)
+        x = x.squeeze(dim=1)
+        out, emb =self.conformer(x,self.device)
+        if self.is_train:
+            return out, emb
+        return out
 
 
 #---------AASIST back-end------------------------#
@@ -434,7 +502,7 @@ class Residual_block(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, args,device):
+    def __init__(self, args, device):
         super().__init__()
         self.device = device
         
@@ -444,11 +512,12 @@ class Model(nn.Module):
         pool_ratios = [0.5, 0.5, 0.5, 0.5]
         temperatures =  [2.0, 2.0, 100.0, 100.0]
 
+        self.is_train = True
 
         ####
         # create network wav2vec 2.0
         ####
-        self.ssl_model = SSLModel(self.device)
+        self.ssl_model = SSLModel(self.device, self.is_train)
         self.LL = nn.Linear(self.ssl_model.out_dim, 128)
 
         self.first_bn = nn.BatchNorm2d(num_features=1)
@@ -509,7 +578,7 @@ class Model(nn.Module):
 
     def forward(self, x):
         #-------pre-trained Wav2vec model fine tunning ------------------------##
-        x_ssl_feat = self.ssl_model.extract_feat(x.squeeze(-1))
+        x_ssl_feat = self.ssl_model.extract_feat(x.squeeze(-1), self.is_train)
         x = self.LL(x_ssl_feat) #(bs,frame_number,feat_out_dim)
         
         # post-processing on front-end features
@@ -518,11 +587,13 @@ class Model(nn.Module):
         x = F.max_pool2d(x, (3, 3))
         x = self.first_bn(x)
         x = self.selu(x)
-
+        # phucdt
+        # x = self.drop(x)
         # RawNet2-based encoder
         x = self.encoder(x)
         x = self.first_bn1(x)
         x = self.selu(x)
+        
         
         w = self.attention(x)
         
@@ -598,4 +669,6 @@ class Model(nn.Module):
         last_hidden = self.drop(last_hidden)
         output = self.out_layer(last_hidden)
         
+        if self.is_train:
+            return output, last_hidden
         return output

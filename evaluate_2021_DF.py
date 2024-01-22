@@ -44,8 +44,8 @@ def eval_to_score_file(score_file, cm_key_file):
     cm_scores = submission_scores.merge(cm_data[cm_data[7] == phase], left_on=0, right_on=1, how='inner')  # check here for progress vs eval set
     bona_cm = cm_scores[cm_scores[5] == 'bonafide']['1_x'].values
     spoof_cm = cm_scores[cm_scores[5] == 'spoof']['1_x'].values
-    eer_cm = em.compute_eer(bona_cm, spoof_cm)[0]
-    out_data = "eer: %.2f\n" % (100*eer_cm)
+    eer_cm, threshold = em.compute_eer(bona_cm, spoof_cm)
+    out_data = "eer: {}\nthreshold: {}".format(100*eer_cm, threshold)
     print(out_data)
     return eer_cm
 

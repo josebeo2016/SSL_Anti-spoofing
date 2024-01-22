@@ -7,12 +7,12 @@ from torch import nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
-from data_utils_for import genSpoof_list, Dataset_for, Dataset_for_eval
+from data_utils_aug import genSpoof_list, genSpoof_list_custom, Dataset_for, Dataset_for_eval
 from model import Model
 # from model_phucdt import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
-
+from tqdm import tqdm
 
 __author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
@@ -22,61 +22,102 @@ __email__ = "tak@eurecom.fr"
 def evaluate_accuracy(dev_loader, model, device):
     val_loss = 0.0
     num_total = 0.0
+    num_correct = 0.0
     model.eval()
-    weight = torch.FloatTensor([0.1, 0.9]).to(device)
+    weight = torch.FloatTensor([0.19, 0.81]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
-    for batch_x, batch_y in dev_loader:
-        
-        batch_size = batch_x.size(0)
-        num_total += batch_size
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x)
-        
-        batch_loss = criterion(batch_out, batch_y)
-        val_loss += (batch_loss.item() * batch_size)
-        
-    val_loss /= num_total
+    with torch.no_grad():
+        for batch_x, batch_y in tqdm(dev_loader):
+            
+            batch_size = batch_x.size(0)
+            num_total += batch_size
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.view(-1).type(torch.int64).to(device)
+            batch_out = model(batch_x)
+            _, batch_pred = batch_out.max(dim=1)
+            num_correct += (batch_pred == batch_y).sum(dim=0).item()
+            
+            batch_loss = criterion(batch_out, batch_y)
+            val_loss += (batch_loss.item() * batch_size)
+            
+        val_loss /= num_total
+        val_accuracy = (num_correct/num_total)*100
    
-    return val_loss
+    return val_loss, val_accuracy
 
-def produce_prob_and_score_file(dataset, model, device, save_path):
-    data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
+def produce_emb_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
     model.eval()
-    
+    model.is_train = True
+
     fname_list = []
     key_list = []
-    
-    for batch_x, utt_id in data_loader:
-        fname_list = []
-        score_list = []  
-        prob_list = []
-        batch_size = batch_x.size(0)
-        batch_x = batch_x.to(device)
-        
-        batch_out = model(batch_x)
-        
-        batch_score = (batch_out[:, 1]  
-                       ).data.cpu().numpy().ravel() 
-        # _, batch_pred = batch_out.max(dim=1)
-        # calculate probability
-        batch_prob = nn.Softmax(dim=1)(batch_out)
+    score_list = []
+    with torch.no_grad():
+        for batch_x, utt_id in tqdm(data_loader):
+            fname_list = []
+            score_list = []  
+            pred_list = []
+            batch_size = batch_x.size(0)
+            batch_x = batch_x.to(device)
+            
+            batch_out, batch_emb = model(batch_x)
+            score_list.extend(batch_out.data.cpu().numpy().tolist())
+            # add outputs
+            fname_list.extend(utt_id)
 
-        # add outputs
-        fname_list.extend(utt_id)
-        score_list.extend(batch_score.tolist())
-        prob_list.extend(batch_prob.tolist())
-        
-        with open(save_path, 'a+') as fh:
-            for f, cm, prob in zip(fname_list,score_list, prob_list):
-                fh.write('{} {} {}\n'.format(f, cm, prob[1]))
-        fh.close()   
+            # save_path now must be a directory
+            # make dir if not exist
+            if not os.path.exists(save_path):
+                os.makedirs(save_path)
+            # Then each emb should be save in a file with name is utt_id
+            for f, emb in zip(fname_list,batch_emb):
+                # normalize filename
+                f = f.split('/')[-1].split('.')[0] # utt id only
+                save_path_utt = os.path.join(save_path, f)
+                np.save(save_path_utt, emb.data.cpu().numpy())
+            
+            # score file save into a single file
+            with open(os.path.join(save_path, "scores.txt"), 'a+') as fh:
+                for f, cm in zip(fname_list,score_list):
+                    fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
+            fh.close()   
     print('Scores saved to {}'.format(save_path))
 
-def produce_prediction_file(dataset, model, device, save_path):
-    data_loader = DataLoader(dataset, batch_size=14, shuffle=False, drop_last=False)
+def produce_score_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size, shuffle=False, drop_last=False)
+    num_correct = 0.0
+    num_total = 0.0
+    model.eval()
+    model.is_train = True
+
+    fname_list = []
+    key_list = []
+    score_list = []
+    with torch.no_grad():
+        for batch_x, utt_id in tqdm(data_loader):
+            fname_list = []
+            score_list = []  
+            pred_list = []
+            batch_size = batch_x.size(0)
+            batch_x = batch_x.to(device)
+            
+            batch_out, batch_emb = model(batch_x)
+            score_list.extend(batch_out.data.cpu().numpy().tolist())
+            # add outputs
+            fname_list.extend(utt_id)
+
+            # score file save into a single file
+            with open(os.path.join(save_path, "scores.txt"), 'a+') as fh:
+                for f, cm in zip(fname_list,score_list):
+                    fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
+            fh.close()   
+    print('Scores saved to {}'.format(save_path))
+    
+def produce_prediction_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
     model.eval()
@@ -84,30 +125,33 @@ def produce_prediction_file(dataset, model, device, save_path):
     fname_list = []
     key_list = []
     score_list = []
-    
-    for batch_x,utt_id in data_loader:
-        fname_list = []
-        score_list = []  
-        batch_size = batch_x.size(0)
-        batch_x = batch_x.to(device)
-        
-        batch_out = model(batch_x)
-        
-        batch_score = (batch_out[:, 1]  
-                       ).data.cpu().numpy().ravel() 
-        # add outputs
-        fname_list.extend(utt_id)
-        score_list.extend(batch_out.data.cpu().numpy().tolist())
-        
-        with open(save_path, 'a+') as fh:
-            for f, cm in zip(fname_list,score_list):
-                fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
-        fh.close()   
+    with torch.no_grad():
+        for batch_x, utt_id in tqdm(data_loader):
+            fname_list = []
+            score_list = [] 
+            pred_list = [] 
+            batch_size = batch_x.size(0)
+            batch_x = batch_x.to(device)
+            
+            batch_out = model(batch_x)
+            
+            batch_score = (batch_out[:, 1]  
+                        ).data.cpu().numpy().ravel() 
+            batch_prob = nn.Softmax(dim=1)(batch_out)
+
+            # add outputs
+            fname_list.extend(utt_id)
+            score_list.extend(batch_score.tolist())
+            pred_list.extend(batch_prob.tolist())
+            
+            with open(save_path, 'a+') as fh:
+                for f, cm, pred in zip(fname_list,score_list, pred_list):
+                    fh.write('{} {} {}\n'.format(f, cm, pred[0]*100))
+            fh.close()   
     print('Scores saved to {}'.format(save_path))
 
-
-def produce_evaluation_file(dataset, model, device, save_path):
-    data_loader = DataLoader(dataset, batch_size=10, shuffle=False, drop_last=False)
+def produce_evaluation_file(dataset, model, device, save_path, batch_size=10):
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
     model.eval()
@@ -115,77 +159,72 @@ def produce_evaluation_file(dataset, model, device, save_path):
     fname_list = []
     key_list = []
     score_list = []
-    
-    for batch_x, utt_id in data_loader:
-        fname_list = []
-        score_list = []  
-        batch_size = batch_x.size(0)
-        batch_x = batch_x.to(device)
-        
-        batch_out = model(batch_x)
-        
-        batch_score = (batch_out[:, 1]  
-                       ).data.cpu().numpy().ravel() 
-        # add outputs
-        fname_list.extend(utt_id)
-        score_list.extend(batch_score.tolist())
-        
-        with open(save_path, 'a+') as fh:
-            for f, cm in zip(fname_list,score_list):
-                fh.write('{} {}\n'.format(f, cm))
-        fh.close()   
+    with torch.no_grad():
+        for batch_x, utt_id in tqdm(data_loader):
+            fname_list = []
+            score_list = []  
+            batch_size = batch_x.size(0)
+            batch_x = batch_x.to(device)
+            
+            batch_out,_ = model(batch_x)
+            
+            # batch_score = (batch_out[:, 1]  
+            #                ).data.cpu().numpy().ravel() 
+            # add outputs
+            fname_list.extend(utt_id)
+            score_list.extend(batch_out.tolist())
+            
+            with open(save_path, 'a+') as fh:
+                for f, cm in zip(fname_list,score_list):
+                    fh.write('{} {} {}\n'.format(f, cm[0], cm[1]))
+            fh.close()   
     print('Scores saved to {}'.format(save_path))
 
-def train_epoch(train_loader, model, lr,optim, device):
+def train_epoch(train_loader, model, lr, optim, device):
     running_loss = 0
-    
     num_total = 0.0
-    
+    num_correct = 0.0
     model.train()
 
     #set objective (Loss) functions
-    weight = torch.FloatTensor([0.1, 0.9]).to(device)
+    weight = torch.FloatTensor([0.5, 0.5]).to('cuda')
     criterion = nn.CrossEntropyLoss(weight=weight)
     
-    for batch_x, batch_y in train_loader:
+    for batch_x, batch_y in tqdm(train_loader):
+        if torch.cuda.device_count() > 1:
+            batch_x = batch_x.to('cuda')
+            batch_y = batch_y.view(-1).type(torch.int64).to('cuda')
+        else:
+            batch_x = batch_x.to(device)
+            batch_y = batch_y.view(-1).type(torch.int64).to(device)
        
         batch_size = batch_x.size(0)
         num_total += batch_size
-        
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        print("Batch_y.shape",batch_y.shape)
         batch_out = model(batch_x)
-        print("Batch_out.shape",batch_out.shape)
         
         batch_loss = criterion(batch_out, batch_y)
         
         running_loss += (batch_loss.item() * batch_size)
-       
-        optimizer.zero_grad()
+        _, batch_pred = batch_out.max(dim=1)
+        num_correct += (batch_pred == batch_y).sum(dim=0).item()
+        optim.zero_grad()
         batch_loss.backward()
-        optimizer.step()
+        optim.step()
        
     running_loss /= num_total
-    
-    return running_loss
+    train_accuracy = (num_correct/num_total)*100
+    return running_loss, train_accuracy
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
     # Dataset
-    parser.add_argument('--database_path', type=str, default='/your/path/to/data/', help='Database path')
+    parser.add_argument('--database_path', type=str, default='/your/path/to/data/', help='Database set')
     '''
     % database_path/
     %   | - protocol.txt
     %   | - audio_path
-    '''
-
-    parser.add_argument('--protocols_path', type=str, default='database/', help='Change with path to user\'s LA database protocols directory address')
-    '''
-    % database_path/
-    %   | - protocol.txt
-    %   | - audio_path
-
+    
+    protocol.txt has 3 columns: key, subset, label
     '''
 
     # Hyperparameters
@@ -209,9 +248,12 @@ if __name__ == '__main__':
     parser.add_argument('--eval', action='store_true', default=False,
                         help='eval mode')
     parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
+    parser.add_argument('--custom', action='store_true', default=False,help='custom eval only')
     parser.add_argument('--eval_part', type=int, default=0)
     parser.add_argument('--predict', action='store_true', default=False,
                         help='get the predicted label instead of score')
+    parser.add_argument('--emb', action='store_true', default=False,
+                        help='get the embedding instead of score')
     # backend options
     parser.add_argument('--cudnn-deterministic-toggle', action='store_false', \
                         default=True, 
@@ -301,33 +343,46 @@ if __name__ == '__main__':
     print('Device: {}'.format(device))
     
     model = Model(args,device)
+    model = model.to(device)
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
-    # model =model.to(device)
-    model =nn.DataParallel(model).to(device)
+    
+    if torch.cuda.device_count() > 1:
+        print("Let's use", torch.cuda.device_count(), "GPUs!")
+        model = nn.DataParallel(model)
+
     print('nb_params:',nb_params)
 
     #set Adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,weight_decay=args.weight_decay)
-    
     if args.model_path:
-        model.load_state_dict(torch.load(args.model_path,map_location=device))
-        print('Model loaded : {}'.format(args.model_path))
-
+        try:
+            model.load_state_dict(torch.load(args.model_path,map_location=device))
+            print('Model loaded : {}'.format(args.model_path))
+        except:
+            print('DataParallel enabled ')
+            model = Model(args,device)
+            model = model.to(device)
+            model = nn.DataParallel(model)
 
     #evaluation 
     if args.eval:
-        file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path,'protocol.txt'),is_eval=True)
-        print('no. of eval trials',len(file_eval))
-        eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path))
-        if (args.predict):
-            produce_prob_and_score_file(eval_set, model, device, args.eval_output)
+        if args.custom:
+            file_eval = genSpoof_list_custom(dir_meta = os.path.join(args.database_path+'/protocol.txt'))
         else:
-            produce_evaluation_file(eval_set, model, device, args.eval_output)
+            file_eval = genSpoof_list( dir_meta =  os.path.join(args.database_path+'/protocol.txt'),is_train=False,is_eval=True)
+        print('no. of eval trials',len(file_eval))
+        eval_set=Dataset_for_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'/'))
+        if (args.predict):
+            produce_prediction_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
+        elif (args.emb):
+            produce_emb_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
+        else:
+            produce_evaluation_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
         sys.exit(0)
    
      
     # define train dataloader
-    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.database_path,'protocol.txt'),is_train=True)
+    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.database_path,'protocol.txt'),is_train=True,is_eval=False,is_dev=False)
     
     print('no. of training trials',len(file_train))
     
@@ -340,7 +395,7 @@ if __name__ == '__main__':
 
     # define validation dataloader
 
-    d_label_dev,file_dev = genSpoof_list(dir_meta = os.path.join(args.database_path,'protocol.txt'),is_dev=True)
+    d_label_dev,file_dev = genSpoof_list(dir_meta = os.path.join(args.database_path,'protocol.txt'),is_train=False,is_eval=False, is_dev=True)
     
     print('no. of validation trials',len(file_dev))
     
@@ -359,8 +414,10 @@ if __name__ == '__main__':
     
     for epoch in range(num_epochs):
         
-        running_loss = train_epoch(train_loader,model, args.lr,optimizer, device)
-        val_loss = evaluate_accuracy(dev_loader, model, device)
+        running_loss, train_accuracy = train_epoch(train_loader,model, args.lr,optimizer, device)
+        val_loss, val_accuracy = evaluate_accuracy(dev_loader, model, device)
+        writer.add_scalar('train_accuracy', train_accuracy, epoch)
+        writer.add_scalar('val_accuracy', val_accuracy, epoch)
         writer.add_scalar('val_loss', val_loss, epoch)
         writer.add_scalar('loss', running_loss, epoch)
         print('\n{} - {} - {} '.format(epoch,

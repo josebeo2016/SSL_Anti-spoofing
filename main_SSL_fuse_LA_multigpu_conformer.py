@@ -8,7 +8,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
 from data_utils_fuse import genSpoof_list, genSpoof_list_custom, Dataset_for, Dataset_for_eval
-from model import Model
+from model import Conformer
 # from model_phucdt import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 __author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
+
 
 class EarlyStop:
     def __init__(self, patience=5, delta=0, init_best=60, save_dir=''):
@@ -40,7 +41,6 @@ class EarlyStop:
             # save model here
             torch.save(model.state_dict(), os.path.join(
                 self.save_dir, 'epoch_{}.pth'.format(epoch)))
-
 def evaluate_accuracy(dev_loader, model, device):
     val_loss = 0.0
     num_total = 0.0
@@ -177,7 +177,7 @@ def produce_evaluation_file(dataset, model, device, save_path):
     num_correct = 0.0
     num_total = 0.0
     model.eval()
-    model.is_train = True
+    model.is_train = False
     
     fname_list = []
     key_list = []
@@ -189,7 +189,7 @@ def produce_evaluation_file(dataset, model, device, save_path):
             batch_size = batch_x.size(0)
             batch_x = batch_x.to(device)
             
-            batch_out, _ = model(batch_x)
+            batch_out = model(batch_x)
             
             # batch_score = (batch_out[:, 1]  
             #                ).data.cpu().numpy().ravel() 
@@ -237,6 +237,7 @@ def train_epoch(train_loader, model, lr, optim, device):
     running_loss /= num_total
     train_accuracy = (num_correct/num_total)*100
     return running_loss, train_accuracy
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
@@ -365,7 +366,7 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'                  
     print('Device: {}'.format(device))
     
-    model = Model(args,device)
+    model = Conformer(args,device)
     model = model.to(device)
     nb_params = sum([param.view(-1).size()[0] for param in model.parameters()])
     print('nb_params:',nb_params)
@@ -373,17 +374,20 @@ if __name__ == '__main__':
     #set Adam optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr,weight_decay=args.weight_decay)
 
+    # load state dict
     if args.model_path:
-        try:
-            model.load_state_dict(torch.load(args.model_path,map_location=device))
-        except:
-            print('DataParallel enabled!')
-            model = Model(args,device)
-            model = model.to(device)
+        # fix state dict missing and unexpected keys
+        pretrained_dict = torch.load(args.model_path)
+        pretrained_dict = {key.replace("module.", ""): value for key, value in pretrained_dict.items()}
+        pretrained_dict = {key.replace("_orig_mod.", ""): value for key, value in pretrained_dict.items()}
+        model.load_state_dict(pretrained_dict)
+        if torch.cuda.device_count() > 1:
             model = nn.DataParallel(model)
-            model.load_state_dict(torch.load(args.model_path,map_location=device))
-        
-        print('Model loaded : {}'.format(args.model_path))
+        print('Model loaded')
+    else:
+        if torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
+        print('Model initialized')
         
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
@@ -435,7 +439,6 @@ if __name__ == '__main__':
     num_epochs = args.num_epochs
     writer = SummaryWriter('logs/{}'.format(model_tag))
     early_stopping = EarlyStop(patience=10, delta=0.01, init_best=90.0, save_dir=model_save_path)
-
     for epoch in range(num_epochs):
         
         running_loss, train_accuracy = train_epoch(train_loader,model, args.lr,optimizer, device)
@@ -445,8 +448,10 @@ if __name__ == '__main__':
         writer.add_scalar('val_loss', val_loss, epoch)
         writer.add_scalar('loss', running_loss, epoch)
         print('\n{} - {} - {} '.format(epoch,running_loss,val_loss))
+        # check early stopping
         early_stopping(val_accuracy, model, epoch)
         if early_stopping.early_stop:
             print("Early stopping activated.")
             break
-        
+        # torch.save(model.state_dict(), os.path.join(
+        #     model_save_path, 'epoch_{}.pth'.format(epoch)))

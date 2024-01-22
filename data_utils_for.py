@@ -16,19 +16,29 @@ ___author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
 
 
-def genSpoof_list( dir_meta,is_train=False,is_eval=False):
+def genSpoof_list( dir_meta,is_train=False,is_eval=False, is_dev=False):
     
     d_meta = {}
     file_list=[]
     with open(dir_meta, 'r') as f:
          l_meta = f.readlines()
+    
 
     if (is_train):
         for line in l_meta:
              key, subset, label = line.strip().split()
-             file_list.append(key)
-             d_meta[key] = 1 if label == 'bonafide' else 0
-        return d_meta,file_list
+             if subset == 'train':
+                file_list.append(key)
+                d_meta[key] = 1 if label == 'bonafide' else 0
+        return d_meta, file_list
+    
+    if (is_dev):
+        for line in l_meta:
+             key, subset, label = line.strip().split()
+             if subset == 'dev':
+                file_list.append(key)
+                d_meta[key] = 1 if label == 'bonafide' else 0
+        return d_meta, file_list
     
     elif(is_eval):
         for line in l_meta:
@@ -80,7 +90,7 @@ class Dataset_for(Dataset):
             # X,fs = librosa.load(self.base_dir+'flac/'+utt_id+'.flac', sr=16000) 
             X, fs = librosa.load(self.base_dir + "/" + utt_id, sr=16000)
             Y=process_Rawboost_feature(X,fs,self.args,self.algo)
-            X_pad= pad(Y,utt_id,self.cut)
+            X_pad= pad(X,utt_id,self.cut)
             x_inp= Tensor(X_pad)
             target = self.labels[utt_id]
             

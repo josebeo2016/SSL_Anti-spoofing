@@ -7,59 +7,75 @@ from torch import nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
-from data_utils_SSL import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval, Dataset_ASVspoof2019_eval
-from model import Model
+from data_utils_SSL_bio import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval, Dataset_ASVspoof2019_eval
+from model_bio import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
+from tqdm import tqdm
+
+import time
 
 
 __author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
 
+class EarlyStop:
+    def __init__(self, patience=5, delta=0, init_best=60, save_dir=''):
+        self.patience = patience
+        self.delta = delta
+        self.best_score = init_best
+        self.counter = 0
+        self.early_stop = False
+        self.save_dir = save_dir
 
+    def __call__(self, score, model, epoch):
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            print("Best epoch: {}".format(epoch))
+            self.best_score = score
+            self.counter = 0
+            # save model here
+            torch.save(model.state_dict(), os.path.join(
+                self.save_dir, 'epoch_{}.pth'.format(epoch)))
 
 def evaluate_accuracy(dev_loader, model, device):
-    val_loss = 0.0
-    num_total = 0.0
-    model.eval()
-    weight = torch.FloatTensor([0.1, 0.9]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weight)
-    for batch_x, batch_y in dev_loader:
-        
-        batch_size = batch_x.size(0)
-        num_total += batch_size
-        batch_x = batch_x.to(device)
-        batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x)
-        
-        batch_loss = criterion(batch_out, batch_y)
-        val_loss += (batch_loss.item() * batch_size)
-        
-    val_loss /= num_total
-   
-    return val_loss
-
-
-def produce_evaluation_file(dataset, model, device, save_path, batch_size=10):
-    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     num_correct = 0.0
     num_total = 0.0
     model.eval()
-    
-    fname_list = []
-    key_list = []
-    score_list = []
     with torch.no_grad():
-        for batch_x,utt_id in data_loader:
+        for batch_x, batch_bio, bio_lengths, batch_y in tqdm(dev_loader, ncols=100):
+            
+            batch_size = batch_x.size(0)
+            num_total += batch_size
+            batch_x = batch_x.to(device)
+            batch_bio = batch_bio.to(device)
+            bio_lengths = bio_lengths.to(device)
+            batch_y = batch_y.view(-1).type(torch.int64).to(device)
+            batch_out, _ = model(batch_x, batch_bio, bio_lengths)
+            _, batch_pred = batch_out.max(dim=1)
+            num_correct += (batch_pred == batch_y).sum(dim=0).item()
+        return 100 * (num_correct / num_total)
+
+
+def produce_evaluation_file(dataset, model, device, save_path, batch_size=128):
+    data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    model.eval()
+    with torch.no_grad():
+        for batch_x, batch_bio, bio_lengths, utt_id in tqdm(data_loader, ncols=100):
             fname_list = []
             score_list = []  
             batch_size = batch_x.size(0)
             batch_x = batch_x.to(device)
-            
-            batch_out = model(batch_x)
-            
-            batch_score = (batch_out[:, 1]  
-                        ).data.cpu().numpy().ravel() 
+            bio_lengths = bio_lengths.to(device)
+            batch_bio = batch_bio.to(device)
+            batch_out, _ = model(batch_x, batch_bio, bio_lengths)
+            batch_score = (batch_out[:, 1]
+                        ).data.cpu().numpy().ravel()
             # add outputs
             fname_list.extend(utt_id)
             score_list.extend(batch_score.tolist())
@@ -68,39 +84,45 @@ def produce_evaluation_file(dataset, model, device, save_path, batch_size=10):
                 for f, cm in zip(fname_list,score_list):
                     fh.write('{} {}\n'.format(f, cm))
             fh.close()   
-    print('Scores saved to {}'.format(save_path))
+        print('Scores saved to {}'.format(save_path))
 
-def train_epoch(train_loader, model, lr,optim, device):
+def train_epoch(train_loader, model, lr, optim, device):
     running_loss = 0
-    
+    num_correct = 0.0
     num_total = 0.0
-    
+    ii = 0
     model.train()
 
     #set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
-    
-    for batch_x, batch_y in train_loader:
+    #PHUCDT 
+    for batch_x, batch_bio, bio_lengths, batch_y in tqdm(train_loader, ncols=100):
        
         batch_size = batch_x.size(0)
         num_total += batch_size
+        ii += 1
         
         batch_x = batch_x.to(device)
+        batch_bio = batch_bio.to(device)
+        bio_lengths = bio_lengths.to(device)
+        
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x)
-        
+        batch_out, _ = model(batch_x,batch_bio, bio_lengths)
         batch_loss = criterion(batch_out, batch_y)
-        
+        _, batch_pred = batch_out.max(dim=1)
+        num_correct += (batch_pred == batch_y).sum(dim=0).item()
         running_loss += (batch_loss.item() * batch_size)
-       
-        optimizer.zero_grad()
+        if ii % 10 == 0:
+            sys.stdout.write('\r \t {:.2f}'.format(
+                (num_correct/num_total)*100))
+        optim.zero_grad()
         batch_loss.backward()
-        optimizer.step()
+        optim.step()
        
     running_loss /= num_total
-    
-    return running_loss
+    train_accuracy = (num_correct/num_total)*100
+    return running_loss, train_accuracy
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
@@ -133,6 +155,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.000001)
     parser.add_argument('--weight_decay', type=float, default=0.0001)
     parser.add_argument('--loss', type=str, default='weighted_CCE')
+    parser.add_argument('--start_epoch', type=int, default=0)
     # model
     parser.add_argument('--seed', type=int, default=1234, 
                         help='random seed (default: 1234)')
@@ -141,13 +164,20 @@ if __name__ == '__main__':
                         default=None, help='Model checkpoint')
     parser.add_argument('--comment', type=str, default=None,
                         help='Comment to describe the saved model')
+    # bio
+    parser.add_argument('--use_bio', default=True,
+                        help='Using biological feature')
+    parser.add_argument('--bio_mode', type=str, default='concat', choices=['concat', 'add'], help='concat/add')
+    parser.add_argument('--bio_out', type=int, default=32, help='output dimension of bio features')
+    parser.add_argument('--bio_name', type=str, default='cnns2s', choices=['cnns2s','transformer', 'rnn'], help='encoding network for bio features')
     # Auxiliary arguments
     parser.add_argument('--track', type=str, default='LA',choices=['LA', 'PA','DF'], help='LA/PA/DF')
     parser.add_argument('--eval_output', type=str, default=None,
                         help='Path to save the evaluation result')
     parser.add_argument('--eval', action='store_true', default=False,
                         help='eval mode')
-    parser.add_argument('--eval_2019', action='store_true', default=False,help='eval LA2019')
+    parser.add_argument('--eval_2019', action='store_true', default=False,
+                        help='eval mode for LA 2019')
     parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
     parser.add_argument('--eval_part', type=int, default=0)
     # backend options
@@ -255,17 +285,15 @@ if __name__ == '__main__':
     if args.eval:
         file_eval = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'{}_cm_protocols/{}.cm.eval.trl.txt'.format(prefix,prefix_2021)),is_train=False,is_eval=True)
         print('no. of eval trials',len(file_eval))
-        eval_set=Dataset_ASVspoof2021_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'ASVspoof2021_{}_eval/'.format(args.track)))
+        eval_set=Dataset_ASVspoof2021_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'ASVspoof2021_{}_eval/'.format(args.track)), use_bio=args.use_bio)
         produce_evaluation_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
         sys.exit(0)
     if args.eval_2019:
         file_eval = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'{}_cm_protocols/{}.cm.eval.trl.txt'.format(prefix,prefix_2019)),is_train=False,is_eval=True)
         print('no. of eval trials',len(file_eval))
-        eval_set=Dataset_ASVspoof2019_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'ASVspoof2019_{}_eval/'.format(args.track)))
+        eval_set=Dataset_ASVspoof2019_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'ASVspoof2019_{}_eval/'.format(args.track)), use_bio=args.use_bio)
         produce_evaluation_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
         sys.exit(0)
-   
-    
 
      
     # define train dataloader
@@ -273,7 +301,7 @@ if __name__ == '__main__':
     
     print('no. of training trials',len(file_train))
     
-    train_set=Dataset_ASVspoof2019_train(args,list_IDs = file_train,labels = d_label_trn,base_dir = os.path.join(args.database_path+'{}_{}_train/'.format(prefix_2019.split('.')[0],args.track)),algo=args.algo)
+    train_set=Dataset_ASVspoof2019_train(args,list_IDs = file_train,labels = d_label_trn,base_dir = os.path.join(args.database_path+'{}_{}_train/'.format(prefix_2019.split('.')[0],args.track)),algo=args.algo, use_bio=args.use_bio)
     
     train_loader = DataLoader(train_set, batch_size=args.batch_size,num_workers=8, shuffle=True,drop_last = True)
     
@@ -288,24 +316,31 @@ if __name__ == '__main__':
     
     dev_set = Dataset_ASVspoof2019_train(args,list_IDs = file_dev,
 		labels = d_label_dev,
-		base_dir = os.path.join(args.database_path+'{}_{}_dev/'.format(prefix_2019.split('.')[0],args.track)),algo=args.algo)
+		base_dir = os.path.join(args.database_path+'{}_{}_dev/'.format(prefix_2019.split('.')[0],args.track)),algo=args.algo, use_bio=args.use_bio)
     dev_loader = DataLoader(dev_set, batch_size=args.batch_size,num_workers=8, shuffle=False)
     del dev_set,d_label_dev
 
     
     
 
-    # Training and validation 
+    # Training and validation
     num_epochs = args.num_epochs
     writer = SummaryWriter('logs/{}'.format(model_tag))
-    
-    for epoch in range(num_epochs):
-        
-        running_loss = train_epoch(train_loader,model, args.lr,optimizer, device)
-        val_loss = evaluate_accuracy(dev_loader, model, device)
-        writer.add_scalar('val_loss', val_loss, epoch)
-        writer.add_scalar('loss', running_loss, epoch)
-        print('\n{} - {} - {} '.format(epoch,
-                                                   running_loss,val_loss))
-        torch.save(model.state_dict(), os.path.join(
-            model_save_path, 'epoch_{}.pth'.format(epoch)))
+    early_stopping = EarlyStop(patience=20, delta=0.01, init_best=99.0, save_dir=model_save_path)
+    start_train_time = time.time()
+    for epoch in range(args.start_epoch,args.start_epoch + num_epochs, 1):
+        print('Epoch {}/{}. Current LR: {}'.format(epoch, num_epochs - 1, optimizer.param_groups[0]['lr']))
+
+        running_loss, train_accuracy = train_epoch(train_loader,model, args.lr,optimizer, device)
+        val_accuracy = evaluate_accuracy(dev_loader, model, device)
+        writer.add_scalar('train_accuracy', train_accuracy, epoch)
+        writer.add_scalar('val_accuracy', val_accuracy, epoch)
+        writer.add_scalar('train_loss', running_loss, epoch)
+        print('\n{} - {}\nTraining ACC:{} - Validation ACC: {}'.format(epoch,running_loss, train_accuracy, val_accuracy))
+        # check early stopping
+        early_stopping(val_accuracy, model, epoch)
+        if early_stopping.early_stop:
+            print("Early stopping activated.")
+            break
+
+    print("Total training time: {}s".format(time.time() - start_train_time))

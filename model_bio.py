@@ -8,13 +8,124 @@ import torch.nn.functional as F
 from torch import Tensor
 import fairseq
 import os
+import math
+import sys
 
-# from conformer import ConformerBlock
+from conformer import ConformerBlock
 from torch.nn.modules.transformer import _get_clones
 
 ___author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
 __modified__ = "josebeo"
+
+######################
+# BTS-E
+######################
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.dirname(SCRIPT_DIR))
+
+try:
+    import transformer
+    import commons
+    import cnns2s
+
+# import biosegment
+except:
+    from . import commons
+    from . import transformer
+    from . import cnns2s
+class bioEncoderConv(nn.Module):
+    def __init__(self, bio_out, device) -> None:
+        super(bioEncoderConv, self).__init__()
+
+        self.device=device       
+        self.conv = cnns2s.Encoder(3,
+                                   64,
+                                   256,
+                                   3,
+                                   device=device
+                                   )
+        self.bio_scoring = nn.Linear(in_features = 64,
+			out_features = bio_out,bias=True)
+        
+    def forward(self, bio, bio_lengths):
+        
+        bio, _ = self.conv(bio)
+        # print(bio.size())
+        bio = bio[:,-1,:]
+        bio_scoring = self.bio_scoring(bio)
+        # print(bio_scoring.size())
+        return bio_scoring
+
+
+class bioEncoderTransformer(nn.Module):
+    def __init__(self, bio_out, device):
+        super(bioEncoderTransformer, self).__init__()
+
+        self.device=device
+        self.bio_dim = 32
+        self.bio_embedding = nn.Embedding(3, 32)
+        nn.init.normal_(self.bio_embedding.weight, 0.0, 32**-0.5)
+
+        self.encoder = transformer.Encoder(
+                        32,
+                        128,
+                        4,
+                        3,
+                        )
+        # self.bio_scoring = nn.Linear(in_features = d_args['bio_rnn'],
+        #         out_features = d_args['nb_fc_node'],bias=True)
+        self.bio_scoring= nn.Conv1d(32, bio_out, 1)
+    
+    def forward(self, bio, bio_lengths):
+        bio = self.bio_embedding(bio) * math.sqrt(self.bio_dim) # [b, bio_lengths, bio_dim]
+        bio = torch.transpose(bio, 1, -1) # [b, bio_dim, bio_lengths]
+        bio_mask = torch.unsqueeze(commons.sequence_mask(bio_lengths, bio.size(2)), 1).to(bio.dtype)
+
+        bio = self.encoder(bio * bio_mask, bio_mask) # [b, bio_dim, bio_lengths]
+
+        bio_scoring = self.bio_scoring(bio) * bio_mask
+
+        return bio_scoring[:,:,-1] # [b, nb_fc_node]
+        # return bio_scoring # for gru
+
+class bioEncoderRNN(nn.Module):
+    def __init__(self, bio_out, device) -> None:
+        super(bioEncoderRNN, self).__init__()
+
+        self.device=device
+        
+        self.bio_emb = nn.Embedding(3, 2)
+        self.bio_dim = 2
+
+        # nn.init.normal_(self.bio_emb.weight, 0.0, d_args['bio_dim']**-0.5)
+        
+        # length scoring == # fc1 out features
+        self.rnn = nn.GRU(2, 64, 1, batch_first=True)
+        
+        
+        self.bio_scoring = nn.Linear(in_features = 64,
+			out_features = bio_out, bias=True)
+        
+    def forward(self, bio, bio_lengths):
+        
+        bio = self.bio_emb(bio) # [b, bio_length, bio_dim]
+        # print(bio.size())
+        bio_lengths = bio_lengths.cpu().numpy()
+ 
+        bio = nn.utils.rnn.pack_padded_sequence(
+                        bio, bio_lengths, batch_first=True)
+
+        self.rnn.flatten_parameters()
+        bio, hidden = self.rnn(bio)
+        bio, _ = nn.utils.rnn.pad_packed_sequence(
+            bio, batch_first=True)
+        
+        # hidden [b, bio_dim]
+        bio_scoring = self.bio_scoring(hidden[-1,:,:])
+        # bio_scoring = torch.tanh(self.bio_scoring(hidden[-1,:,:]))
+        return bio_scoring
+
 
 ############################
 ## FOR fine-tuned SSL MODEL
@@ -71,26 +182,25 @@ Rosello, E., Gomez-Alanis, A., Gomez, A.M., Peinado, A.
 Proc. INTERSPEECH 2023, 5281-5285, doi: 10.21437/Interspeech.2023-1820
 '''
 class MyConformer(nn.Module):
-  def __init__(self, emb_size=128, heads=4, ffmult=4, exp_fac=2, kernel_size=16, n_encoders=1):
-    super(MyConformer, self).__init__()
-    self.dim_head=int(emb_size/heads)
-    self.dim=emb_size
-    self.heads=heads
-    self.kernel_size=kernel_size
-    self.n_encoders=n_encoders
-    self.encoder_blocks=_get_clones( ConformerBlock( dim = emb_size, dim_head=self.dim_head, heads= heads, 
-    ff_mult = ffmult, conv_expansion_factor = exp_fac, conv_kernel_size = kernel_size),
-    n_encoders)
-    self.class_token = nn.Parameter(torch.rand(1, emb_size))
-    self.fc5 = nn.Linear(emb_size, 2)
-
-  def forward(self, x, device): # x shape [bs, tiempo, frecuencia]
-    x = torch.stack([torch.vstack((self.class_token, x[i])) for i in range(len(x))])#[bs,1+tiempo,emb_size]
-    for layer in self.encoder_blocks:
+    def __init__(self, emb_size=128, heads=4, ffmult=4, exp_fac=2, kernel_size=16, n_encoders=1):
+        super(MyConformer, self).__init__()
+        self.dim_head=int(emb_size/heads)
+        self.dim=emb_size
+        self.heads=heads
+        self.kernel_size=kernel_size
+        self.n_encoders=n_encoders
+        self.encoder_blocks=_get_clones( ConformerBlock( dim = emb_size, dim_head=self.dim_head, heads= heads, 
+        ff_mult = ffmult, conv_expansion_factor = exp_fac, conv_kernel_size = kernel_size),
+        n_encoders)
+        self.class_token = nn.Parameter(torch.rand(1, emb_size))
+        # self.fc5 = nn.Linear(emb_size, 2)
+    def forward(self, x, device): # x shape [bs, tiempo, frecuencia]
+        x = torch.stack([torch.vstack((self.class_token, x[i])) for i in range(len(x))])#[bs,1+tiempo,emb_size]
+        for layer in self.encoder_blocks:
             x = layer(x) #[bs,1+tiempo,emb_size]
-    embedding=x[:,0,:] #[bs, emb_size]
-    out=self.fc5(embedding) #[bs,2]
-    return out, embedding
+        embedding=x[:,0,:] #[bs, emb_size]
+        # out=self.fc5(embedding) #[bs,2]
+        return embedding
 
 class Conformer(nn.Module):
     def __init__(self, args, device):
@@ -102,12 +212,40 @@ class Conformer(nn.Module):
         self.is_train = True
         self.ssl_model = SSLModel(self.device, self.is_train)
         self.LL = nn.Linear(1024, 144)
+        self.emb_size=144
         print('W2V + Conformer')
         self.first_bn = nn.BatchNorm2d(num_features=1)
         self.selu = nn.SELU(inplace=True)
-        self.conformer=MyConformer(emb_size=144, n_encoders=3,
+        self.conformer=MyConformer(emb_size=self.emb_size, n_encoders=3,
         heads=4, kernel_size=31)
-    def forward(self, x):
+        
+        # BIO correlation encoding
+        self.bio_mode = args.bio_mode
+        if args.bio_name == 'cnns2s':
+            if args.bio_mode == 'concat':
+                self.bioScoring = bioEncoderConv(args.bio_out, self.device)
+            elif args.bio_mode == 'add':
+                self.bioScoring = bioEncoderConv(self.emb_size, self.device)
+        elif args.bio_name == 'transformer':
+            if args.bio_mode == 'concat':
+                self.bioScoring = bioEncoderTransformer(args.bio_out, self.device)
+            elif args.bio_mode == 'add':
+                self.bioScoring = bioEncoderTransformer(self.emb_size, self.device)
+        elif args.bio_name == 'rnn':
+            if args.bio_mode == 'concat':
+                self.bioScoring = bioEncoderRNN(args.bio_out, self.device)
+            elif args.bio_mode == 'add':
+                self.bioScoring = bioEncoderRNN(self.emb_size, self.device)
+            
+        # Concat
+        if (self.bio_mode == 'concat'):
+            self.out_layer = nn.Linear(in_features =self.emb_size + args.bio_out,
+			                            out_features = 2,bias=True)
+        else:
+            self.out_layer = nn.Linear(in_features = self.emb_size,
+                out_features = 2,bias=True)
+        
+    def forward(self, x, bio=None, bio_lengths=None):
         #-------pre-trained Wav2vec model fine tunning ------------------------##
         x_ssl_feat = self.ssl_model.extract_feat(x.squeeze(-1), is_train=self.is_train)
         x=self.LL(x_ssl_feat) #(bs,frame_number,feat_out_dim) (bs, 208, 256)
@@ -115,7 +253,15 @@ class Conformer(nn.Module):
         x = self.first_bn(x)
         x = self.selu(x)
         x = x.squeeze(dim=1)
-        out, emb =self.conformer(x,self.device)
+        emb =self.conformer(x,self.device)
+        if (bio is not None):
+            bio_scoring = self.bioScoring(bio, bio_lengths)
+            if (self.bio_mode == 'concat'):
+                emb = torch.cat((emb, bio_scoring), 1)
+            elif (self.bio_mode == 'add'):
+                emb = emb + bio_scoring
+        
+        out = self.out_layer(emb)
         if self.is_train:
             return out, emb
         return out
@@ -540,8 +686,8 @@ class Model(nn.Module):
             nn.SELU(inplace=True),
             nn.BatchNorm2d(128),
             nn.Conv2d(128, 64, kernel_size=(1,1)),
-            
         )
+        
         # position encoding
         self.pos_S = nn.Parameter(torch.randn(1, 42, filts[-1][-1]))
         
@@ -574,9 +720,35 @@ class Model(nn.Module):
         self.pool_hS2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         self.pool_hT2 = GraphPool(pool_ratios[2], gat_dims[1], 0.3)
         
-        self.out_layer = nn.Linear(5 * gat_dims[1], 2)
+        # BIO correlation encoding
+        self.bio_mode = args.bio_mode
+        if args.bio_name == 'cnns2s':
+            if args.bio_mode == 'concat':
+                self.bioScoring = bioEncoderConv(args.bio_out, self.device)
+            elif args.bio_mode == 'add':
+                self.bioScoring = bioEncoderConv(5 * gat_dims[1], self.device)
+        elif args.bio_name == 'transformer':
+            if args.bio_mode == 'concat':
+                self.bioScoring = bioEncoderTransformer(args.bio_out, self.device)
+            elif args.bio_mode == 'add':
+                self.bioScoring = bioEncoderTransformer(5 * gat_dims[1], self.device)
+        elif args.bio_name == 'rnn':
+            if args.bio_mode == 'concat':
+                self.bioScoring = bioEncoderRNN(args.bio_out, self.device)
+            elif args.bio_mode == 'add':
+                self.bioScoring = bioEncoderRNN(5 * gat_dims[1], self.device)
+            
+        # Concat
+        if (self.bio_mode == 'concat'):
+            self.out_layer = nn.Linear(in_features =5 * gat_dims[1] + args.bio_out,
+			                            out_features = 2,bias=True)
+        else:
+            self.out_layer = nn.Linear(in_features = 5 * gat_dims[1],
+                out_features = 2,bias=True)
+        
+        # self.out_layer = nn.Linear(5 * gat_dims[1], 2)
 
-    def forward(self, x):
+    def forward(self, x, bio=None, bio_lengths=None):
         #-------pre-trained Wav2vec model fine tunning ------------------------##
         x_ssl_feat = self.ssl_model.extract_feat(x.squeeze(-1), self.is_train)
         x = self.LL(x_ssl_feat) #(bs,frame_number,feat_out_dim)
@@ -666,8 +838,16 @@ class Model(nn.Module):
         last_hidden = torch.cat(
             [T_max, T_avg, S_max, S_avg, master.squeeze(1)], dim=1)
         
-        last_hidden = self.drop(last_hidden)
-        output = self.out_layer(last_hidden)
+        x = self.drop(last_hidden)
+        
+        if (bio is not None):
+            bio_scoring = self.bioScoring(bio, bio_lengths)
+            if (self.bio_mode == 'concat'):
+                x = torch.cat((x, bio_scoring), 1)
+            elif (self.bio_mode == 'add'):
+                x = x + bio_scoring
+        
+        output = self.out_layer(x)
         
         if self.is_train:
             return output, last_hidden

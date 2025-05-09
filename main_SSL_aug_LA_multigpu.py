@@ -17,13 +17,36 @@ from tqdm import tqdm
 __author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
 
+class EarlyStop:
+    def __init__(self, patience=5, delta=0, init_best=60, save_dir=''):
+        self.patience = patience
+        self.delta = delta
+        self.best_score = init_best
+        self.counter = 0
+        self.early_stop = False
+        self.save_dir = save_dir
 
+    def __call__(self, score, model, epoch):
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            print("Best epoch: {}".format(epoch))
+            self.best_score = score
+            self.counter = 0
+            # save model here
+            torch.save(model.state_dict(), os.path.join(
+                self.save_dir, 'epoch_{}.pth'.format(epoch)))
 
 def evaluate_accuracy(dev_loader, model, device):
     val_loss = 0.0
     num_total = 0.0
     num_correct = 0.0
     model.eval()
+    model.is_train = True
     weight = torch.FloatTensor([0.19, 0.81]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
     with torch.no_grad():
@@ -33,7 +56,7 @@ def evaluate_accuracy(dev_loader, model, device):
             num_total += batch_size
             batch_x = batch_x.to(device)
             batch_y = batch_y.view(-1).type(torch.int64).to(device)
-            batch_out = model(batch_x)
+            batch_out, _ = model(batch_x)
             _, batch_pred = batch_out.max(dim=1)
             num_correct += (batch_pred == batch_y).sum(dim=0).item()
             
@@ -185,6 +208,7 @@ def train_epoch(train_loader, model, lr, optim, device):
     num_total = 0.0
     num_correct = 0.0
     model.train()
+    model.is_train = True
 
     #set objective (Loss) functions
     weight = torch.FloatTensor([0.5, 0.5]).to('cuda')
@@ -200,7 +224,7 @@ def train_epoch(train_loader, model, lr, optim, device):
        
         batch_size = batch_x.size(0)
         num_total += batch_size
-        batch_out = model(batch_x)
+        batch_out, _ = model(batch_x)
         
         batch_loss = criterion(batch_out, batch_y)
         
@@ -411,7 +435,7 @@ if __name__ == '__main__':
     # Training and validation 
     num_epochs = args.num_epochs
     writer = SummaryWriter('logs/{}'.format(model_tag))
-    
+    early_stopping = EarlyStop(patience=10, delta=0.01, init_best=99.0, save_dir=model_save_path)
     for epoch in range(num_epochs):
         
         running_loss, train_accuracy = train_epoch(train_loader,model, args.lr,optimizer, device)
@@ -420,7 +444,9 @@ if __name__ == '__main__':
         writer.add_scalar('val_accuracy', val_accuracy, epoch)
         writer.add_scalar('val_loss', val_loss, epoch)
         writer.add_scalar('loss', running_loss, epoch)
-        print('\n{} - {} - {} '.format(epoch,
-                                                   running_loss,val_loss))
-        torch.save(model.state_dict(), os.path.join(
-            model_save_path, 'epoch_{}.pth'.format(epoch)))
+        # check early stopping
+        early_stopping(val_accuracy, model, epoch)
+        if early_stopping.early_stop:
+            print("Early stopping activated.")
+            break
+        print('\n{} - {} - {} '.format(epoch, val_loss, val_accuracy))

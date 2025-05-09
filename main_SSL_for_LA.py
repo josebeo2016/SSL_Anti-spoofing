@@ -12,7 +12,7 @@ from model import Model
 # from model_phucdt import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
-
+from tqdm import tqdm
 
 __author__ = "Hemlata Tak"
 __email__ = "tak@eurecom.fr"
@@ -111,29 +111,30 @@ def produce_evaluation_file(dataset, model, device, save_path):
     num_correct = 0.0
     num_total = 0.0
     model.eval()
+    model.is_train=False
     
     fname_list = []
     key_list = []
     score_list = []
-    
-    for batch_x, utt_id in data_loader:
-        fname_list = []
-        score_list = []  
-        batch_size = batch_x.size(0)
-        batch_x = batch_x.to(device)
-        
-        batch_out = model(batch_x)
-        
-        batch_score = (batch_out[:, 1]  
-                       ).data.cpu().numpy().ravel() 
-        # add outputs
-        fname_list.extend(utt_id)
-        score_list.extend(batch_score.tolist())
-        
-        with open(save_path, 'a+') as fh:
-            for f, cm in zip(fname_list,score_list):
-                fh.write('{} {}\n'.format(f, cm))
-        fh.close()   
+    with torch.no_grad():
+        for batch_x, utt_id in tqdm(data_loader, total=len(data_loader), ncols=100):
+            fname_list = []
+            score_list = []  
+            batch_size = batch_x.size(0)
+            batch_x = batch_x.to(device)
+            
+            batch_out = model(batch_x)
+            
+            batch_score = (batch_out[:, 1]  
+                        ).data.cpu().numpy().ravel() 
+            # add outputs
+            fname_list.extend(utt_id)
+            score_list.extend(batch_score.tolist())
+            
+            with open(save_path, 'a+') as fh:
+                for f, cm in zip(fname_list,score_list):
+                    fh.write('{} {}\n'.format(f, cm))
+            fh.close()   
     print('Scores saved to {}'.format(save_path))
 
 def train_epoch(train_loader, model, lr,optim, device):

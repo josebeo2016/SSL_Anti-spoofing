@@ -188,7 +188,44 @@ class Dataset_ASVspoof2019_eval(Dataset):
             torch.save(bio_inp, feat_name)
         return bio_inp, bio_length
 
+class Dataset_eval(Dataset):
+    def __init__(self, list_IDs, base_dir, use_bio=False):
+        '''self.list_IDs	: list of strings (each string: utt key),
+           '''
 
+        self.list_IDs = list_IDs
+        self.base_dir = base_dir
+        self.use_bio = use_bio
+
+    def __len__(self):
+        return len(self.list_IDs)
+
+    def __getitem__(self, index):
+        self.cut = 64600  # take ~4 sec audio (64600 samples)
+        key = self.list_IDs[index]
+        X, fs = librosa.load(os.path.join(self.base_dir,key), sr=16000)
+        X_pad = pad(X, self.cut)
+        x_inp = Tensor(X_pad)
+        if self.use_bio:
+            bio_inp, bio_length = self.get_Bio(key, X_pad, fs)
+            return x_inp, bio_inp, bio_length, key
+        else:
+            return x_inp, 0,0, key
+    def get_Bio(self, filename, X_pad, fs):
+        
+        utt = filename.split("/")[-1]
+        feat_name = "./feats/cnn_itw/" + utt
+
+        if os.path.exists(feat_name):
+            bio_inp = torch.load(feat_name)
+            bio_length = bio_inp.size()[0]
+            
+        else:
+            bio = wav2bio(X_pad, fs)
+            bio_length = len(bio)
+            bio_inp = torch.IntTensor(bio)
+            torch.save(bio_inp, feat_name)
+        return bio_inp, bio_length
 
 #--------------RawBoost data augmentation algorithms---------------------------##
 

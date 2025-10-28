@@ -7,7 +7,7 @@ from torch import nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 import yaml
-from data_utils_SSL_bio import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval, Dataset_ASVspoof2019_eval
+from data_utils_SSL_bio import genSpoof_list,Dataset_ASVspoof2019_train,Dataset_ASVspoof2021_eval, Dataset_ASVspoof2019_eval, genSpoof_list_custom, Dataset_eval
 from model_bio import Model
 from tensorboardX import SummaryWriter
 from core_scripts.startup_config import set_random_seed
@@ -62,7 +62,7 @@ def evaluate_accuracy(dev_loader, model, device):
         return 100 * (num_correct / num_total)
 
 
-def produce_evaluation_file(dataset, model, device, save_path, batch_size=128):
+def produce_evaluation_file(dataset, model, device, save_path, batch_size=128, use_bio=True):
     data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
     model.eval()
     with torch.no_grad():
@@ -71,8 +71,14 @@ def produce_evaluation_file(dataset, model, device, save_path, batch_size=128):
             score_list = []  
             batch_size = batch_x.size(0)
             batch_x = batch_x.to(device)
-            bio_lengths = bio_lengths.to(device)
-            batch_bio = batch_bio.to(device)
+            if use_bio:
+                bio_lengths = bio_lengths.to(device)
+                batch_bio = batch_bio.to(device)
+            else:
+                batch_bio = None
+                bio_lengths = None
+            # bio_lengths = bio_lengths.to(device)
+            # batch_bio = batch_bio.to(device)
             batch_out, _ = model(batch_x, batch_bio, bio_lengths)
             batch_score = (batch_out[:, 1]
                         ).data.cpu().numpy().ravel()
@@ -86,7 +92,7 @@ def produce_evaluation_file(dataset, model, device, save_path, batch_size=128):
             fh.close()   
         print('Scores saved to {}'.format(save_path))
 
-def train_epoch(train_loader, model, lr, optim, device):
+def train_epoch(train_loader, model, lr, optim, device, use_bio=True):
     running_loss = 0
     num_correct = 0.0
     num_total = 0.0
@@ -104,8 +110,14 @@ def train_epoch(train_loader, model, lr, optim, device):
         ii += 1
         
         batch_x = batch_x.to(device)
-        batch_bio = batch_bio.to(device)
-        bio_lengths = bio_lengths.to(device)
+        # batch_bio = batch_bio.to(device)
+        # bio_lengths = bio_lengths.to(device)
+        if use_bio:
+            batch_bio = batch_bio.to(device)
+            bio_lengths = bio_lengths.to(device)
+        else:
+            batch_bio = None
+            bio_lengths = None
         
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
         batch_out, _ = model(batch_x,batch_bio, bio_lengths)
@@ -178,6 +190,8 @@ if __name__ == '__main__':
                         help='eval mode')
     parser.add_argument('--eval_2019', action='store_true', default=False,
                         help='eval mode for LA 2019')
+    parser.add_argument('--eval_custom', action='store_true', default=False,
+                        help='eval mode')
     parser.add_argument('--is_eval', action='store_true', default=False,help='eval database')
     parser.add_argument('--eval_part', type=int, default=0)
     # backend options
@@ -293,6 +307,12 @@ if __name__ == '__main__':
         print('no. of eval trials',len(file_eval))
         eval_set=Dataset_ASVspoof2019_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path+'ASVspoof2019_{}_eval/'.format(args.track)), use_bio=args.use_bio)
         produce_evaluation_file(eval_set, model, device, args.eval_output, batch_size=args.batch_size)
+        sys.exit(0)
+    if args.eval_custom:
+        file_eval = genSpoof_list_custom( dir_meta =  os.path.join(args.database_path,'protocol.txt'))
+        print('no. of eval trials',len(file_eval))
+        eval_set=Dataset_eval(list_IDs = file_eval,base_dir = os.path.join(args.database_path), use_bio=args.use_bio)
+        produce_evaluation_file(eval_set, model, device, args.eval_output,batch_size=args.batch_size, use_bio=args.use_bio)
         sys.exit(0)
 
      
